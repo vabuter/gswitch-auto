@@ -309,6 +309,32 @@ func TestAutoToggleWroteFile(t *testing.T) {
 	}
 }
 
+// TestServiceRefreshDroppedDuringUserAction: a periodic is-enabled read that
+// was requested before (or overlaps) an Autostart toggle must not overwrite
+// the checkbox the user just changed.
+func TestServiceRefreshDroppedDuringUserAction(t *testing.T) {
+	w := &SettingsWindow{}
+	requested := w.serviceActionGen
+	if !serviceRefreshCurrent(requested, w.serviceActionGen, w.serviceActions) {
+		t.Fatal("refresh without a user action dropped")
+	}
+	w.beginServiceAction() // the user ticks Autostart; systemctl enable runs
+	if serviceRefreshCurrent(requested, w.serviceActionGen, w.serviceActions) {
+		t.Fatal("refresh requested before the action applied while it runs")
+	}
+	w.endServiceAction()
+	if serviceRefreshCurrent(requested, w.serviceActionGen, w.serviceActions) {
+		t.Fatal("refresh requested before the action applied after it ended")
+	}
+	if !serviceRefreshCurrent(w.serviceActionGen, w.serviceActionGen, w.serviceActions) {
+		t.Fatal("refresh requested after the action dropped")
+	}
+	w.endServiceAction() // unbalanced end stays at zero
+	if w.serviceActions != 0 {
+		t.Fatalf("serviceActions = %d", w.serviceActions)
+	}
+}
+
 func TestServiceButtonSensitivity(t *testing.T) {
 	for _, tt := range []struct {
 		status               ServiceStatus

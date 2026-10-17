@@ -87,6 +87,8 @@ type SettingsWindow struct {
 	stopButton           *gtk.Button
 	serviceRefreshActive bool
 	serviceRefreshBusy   bool
+	serviceActions       int    // user service/autostart actions in flight (GTK thread)
+	serviceActionGen     uint64 // bumped when a user service/autostart action starts
 	auto                 *autoSettings
 }
 
@@ -1111,10 +1113,12 @@ func (w *SettingsWindow) IsVisible() bool {
 
 // onRestartClicked handles the Restart button click.
 func (w *SettingsWindow) onRestartClicked() {
+	w.beginServiceAction()
 	// Run in goroutine to avoid blocking UI
 	go func() {
 		err := w.serviceManager.Restart()
 		glib.IdleAdd(func() {
+			w.endServiceAction()
 			if err != nil {
 				if !errors.Is(err, ErrUserCanceled) {
 					w.showErrorDialog(tr(strErrorRestartFailed), err.Error())
@@ -1513,6 +1517,7 @@ func (w *SettingsWindow) onAutostartToggled() {
 	}
 
 	isActive := w.autostartCheck.GetActive()
+	w.beginServiceAction()
 
 	// Run in goroutine to avoid blocking UI
 	go func() {
@@ -1524,6 +1529,7 @@ func (w *SettingsWindow) onAutostartToggled() {
 		}
 
 		glib.IdleAdd(func() {
+			w.endServiceAction()
 			if err != nil {
 				if !errors.Is(err, ErrUserCanceled) {
 					if isActive {

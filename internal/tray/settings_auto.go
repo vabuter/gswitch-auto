@@ -791,9 +791,11 @@ func (w *SettingsWindow) updateServiceButtons(status ServiceStatus, err error) {
 // runServiceAction runs a systemctl action off the GTK thread, like
 // onRestartClicked.
 func (w *SettingsWindow) runServiceAction(action func() error, failure string) {
+	w.beginServiceAction()
 	go func() {
 		err := action()
 		glib.IdleAdd(func() {
+			w.endServiceAction()
 			if w.window == nil {
 				return
 			}
@@ -825,19 +827,44 @@ func (w *SettingsWindow) startServiceRefresh() {
 	})
 }
 
+// beginServiceAction and endServiceAction bracket a user action (autostart
+// toggle, Start/Stop/Restart) on the GTK thread, so that the periodic refresh
+// neither starts nor applies a state read while the action may still be
+// running (a stale is-enabled would untick the Autostart box the user just
+// ticked and invite a second click that undoes it).
+func (w *SettingsWindow) beginServiceAction() {
+	w.serviceActions++
+	w.serviceActionGen++
+}
+
+func (w *SettingsWindow) endServiceAction() {
+	if w.serviceActions > 0 {
+		w.serviceActions--
+	}
+}
+
+// serviceRefreshCurrent reports whether a refresh requested at action
+// generation requested may be applied now: no user action is running and
+// none started since the request (each action shows its own result when it
+// ends, and the next tick reads the state again).
+func serviceRefreshCurrent(requested, gen uint64, running int) bool {
+	return running == 0 && requested == gen
+}
+
 // refreshServiceStatusAsync reads the service state off the GTK thread.
 func (w *SettingsWindow) refreshServiceStatusAsync() {
-	if w.serviceRefreshBusy {
+	if w.serviceRefreshBusy || w.serviceActions > 0 {
 		return
 	}
 	w.serviceRefreshBusy = true
+	requested := w.serviceActionGen
 	manager := w.serviceManager
 	go func() {
 		status, err := manager.GetStatus()
 		enabled, _ := manager.IsEnabled()
 		glib.IdleAdd(func() {
 			w.serviceRefreshBusy = false
-			if w.window == nil {
+			if w.window == nil || !serviceRefreshCurrent(requested, w.serviceActionGen, w.serviceActions) {
 				return
 			}
 			w.applyServiceStatusWidgets(status, enabled, err)
