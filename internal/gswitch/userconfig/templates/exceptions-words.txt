@@ -1,0 +1,6 @@
+# gswitch-auto exception words: these words are never corrected automatically.
+#
+# One word per line, as it appears on screen when typed in the wrong layout
+# (for example "ghbdtn" or "руддщ"). Matching ignores case, treats "ё" as "е"
+# and ignores leading and trailing punctuation. '#' starts a comment.
+# Words you undo with double Shift right after a correction are added here.

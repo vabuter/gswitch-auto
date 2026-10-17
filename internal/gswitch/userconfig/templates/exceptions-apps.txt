@@ -1,0 +1,18 @@
+# gswitch-auto excluded applications: no automatic correction in these apps.
+#
+# Exclusions need the gswitch-focus GNOME Shell extension; without it this
+# list has no effect. One entry per line: a desktop application id (the
+# ".desktop" suffix is optional) or a WM_CLASS; matching ignores case.
+# Entries containing '*' or '?' are glob patterns. '#' starts a comment.
+
+# Terminals
+org.gnome.terminal
+org.gnome.console
+org.gnome.ptyxis
+com.mitchellh.ghostty
+kitty
+alacritty
+org.wezfurlong.wezterm
+
+# Password managers
+org.keepassxc.keepassxc
