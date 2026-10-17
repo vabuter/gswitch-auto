@@ -56,6 +56,14 @@ func (statusNotifierBackend) AddMenuItem(title, tooltip string) trayMenuItem {
 	return &statusNotifierMenuItem{item: systray.AddMenuItem(title, tooltip)}
 }
 
+// AddMenuItemCheckbox implements checkboxTrayBackend with fyne.io/systray's
+// checkable items (dbusmenu toggle-type "checkmark").
+//
+//nolint:ireturn // All tray backends expose menu items through this contract.
+func (statusNotifierBackend) AddMenuItemCheckbox(title, tooltip string, checked bool) trayMenuItem {
+	return &statusNotifierMenuItem{item: systray.AddMenuItemCheckbox(title, tooltip, checked)}
+}
+
 func (statusNotifierBackend) AddSeparator() {
 	systray.AddSeparator()
 }
@@ -77,3 +85,17 @@ func (m *statusNotifierMenuItem) Disable() {
 }
 
 func (m *statusNotifierMenuItem) SetTooltip(text string) { m.item.SetTooltip(text) }
+
+// SetChecked implements checkableTrayMenuItem.
+func (m *statusNotifierMenuItem) SetChecked(checked bool) {
+	if checked {
+		m.item.Check()
+	} else {
+		m.item.Uncheck()
+	}
+}
+
+var (
+	_ checkboxTrayBackend   = statusNotifierBackend{}
+	_ checkableTrayMenuItem = (*statusNotifierMenuItem)(nil)
+)

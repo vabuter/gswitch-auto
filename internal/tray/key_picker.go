@@ -6,12 +6,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/gtk"
 
 	gsconfig "github.com/arumata/gswitch/internal/gswitch/config"
 	"github.com/arumata/gswitch/internal/gswitch/detect"
+	"github.com/arumata/gswitch/internal/gswitch/userconfig"
 )
 
 const xkbKeycodeOffset uint16 = 8
@@ -48,6 +50,12 @@ func (c *keyPickerCapture) release(hardware uint16, source string) {
 	if code, ok := gdkHardwareKeycodeToEvdev(hardware); ok && !isXTestKeyboard(source) {
 		delete(c.pressed, code)
 	}
+}
+
+// clearPressed forgets the keys believed to be held (focus-out or a broken
+// grab loses their releases) and keeps the saved chord.
+func (c *keyPickerCapture) clearPressed() {
+	clear(c.pressed)
 }
 
 // XTest injectors such as xcape emit a second chord after a physical modifier
@@ -111,7 +119,56 @@ const (
 	KeyPickerForLayoutSwitch KeyPickerContext = iota
 	// KeyPickerForConvertKey - selecting the convert key.
 	KeyPickerForConvertKey
+	// KeyPickerForChordToggleAuto - selecting the auto mode toggle chord.
+	KeyPickerForChordToggleAuto
+	// KeyPickerForChordConvertSelection - selecting the selection conversion chord.
+	KeyPickerForChordConvertSelection
 )
+
+// Keys that confirm (Enter, KP_Enter) or cancel (Escape) a chord picker when
+// pressed alone instead of being captured.
+const (
+	keyPickerEnter   uint16 = 28
+	keyPickerKPEnter uint16 = 96
+	keyPickerEscape  uint16 = 1
+)
+
+func isChordPickerContext(context KeyPickerContext) bool {
+	return context == KeyPickerForChordToggleAuto || context == KeyPickerForChordConvertSelection
+}
+
+// keyPickerPassthrough reports whether a key press in a chord context is a
+// bare Enter/KP_Enter/Escape (nothing else held) that confirms or cancels the
+// dialog instead of being captured.
+func keyPickerPassthrough(context KeyPickerContext, hardware uint16, pressed map[uint16]string) bool {
+	if !isChordPickerContext(context) || len(pressed) != 0 {
+		return false
+	}
+	code, ok := gdkHardwareKeycodeToEvdev(hardware)
+	if !ok {
+		return false
+	}
+	return code == keyPickerEnter || code == keyPickerKPEnter || code == keyPickerEscape
+}
+
+// keyPickerSuspend holds the hook that suspends (true) or resumes (false)
+// the daemon's gestures and chords while a picker captures keys. The tray's
+// daemon client installs it; it must not block.
+var keyPickerSuspend atomic.Pointer[func(bool)]
+
+func setKeyPickerSuspend(fn func(bool)) {
+	if fn == nil {
+		keyPickerSuspend.Store(nil)
+		return
+	}
+	keyPickerSuspend.Store(&fn)
+}
+
+func suspendHotkeysForPicker(suspend bool) {
+	if fn := keyPickerSuspend.Load(); fn != nil {
+		(*fn)(suspend)
+	}
+}
 
 // keyPickerTitle returns the dialog title based on context.
 func keyPickerTitle(context KeyPickerContext) string {
@@ -120,6 +177,10 @@ func keyPickerTitle(context KeyPickerContext) string {
 		return tr(strKeyPickerTitleLayoutSwitch)
 	case KeyPickerForConvertKey:
 		return tr(strKeyPickerTitleConvertKey)
+	case KeyPickerForChordToggleAuto:
+		return tr(strGAKeyPickerTitleToggle)
+	case KeyPickerForChordConvertSelection:
+		return tr(strGAKeyPickerTitleSelection)
 	default:
 		return tr(strKeyPickerTitleConvertKey)
 	}
@@ -141,12 +202,18 @@ func keyPickerHint(context KeyPickerContext) string {
 	if context == KeyPickerForConvertKey {
 		return tr(strKeyPickerHintConvert)
 	}
+	if isChordPickerContext(context) {
+		return tr(strGAKeyPickerHintChord)
+	}
 	return tr(strKeyPickerHint)
 }
 
 func keySelectionValid(context KeyPickerContext, codes []uint16) bool {
 	if len(codes) == 0 {
 		return false
+	}
+	if isChordPickerContext(context) {
+		return userconfig.ValidateChord(chordFromCodes(codes)) == nil
 	}
 	if context != KeyPickerForConvertKey {
 		return true
@@ -157,6 +224,12 @@ func keySelectionValid(context KeyPickerContext, codes []uint16) bool {
 // keySelectionMessage explains a rejected choice; an empty initial selection
 // needs only the instruction, not an error.
 func keySelectionMessage(context KeyPickerContext, codes []uint16) string {
+	if isChordPickerContext(context) && len(codes) > 0 {
+		if err := userconfig.ValidateChord(chordFromCodes(codes)); err != nil {
+			return chordErrorMessage(err)
+		}
+		return ""
+	}
 	if context != KeyPickerForConvertKey || len(codes) == 0 {
 		return ""
 	}
@@ -283,6 +356,16 @@ func ShowKeyPickerDialog(parent *gtk.Window, context KeyPickerContext, otherKeyV
 
 	dialog.Connect("key-press-event", func(_ *gtk.Dialog, event *gdk.Event) bool {
 		keyEvent := gdk.EventKeyNewFromEvent(event)
+		if keyPickerPassthrough(context, keyEvent.HardwareKeyCode(), capture.pressed) {
+			// Confirm or cancel instead of capturing; the focused button
+			// must not decide what Enter does.
+			if code, _ := gdkHardwareKeycodeToEvdev(keyEvent.HardwareKeyCode()); code == keyPickerEscape {
+				dialog.Response(gtk.RESPONSE_CANCEL)
+			} else if keySelectionValid(context, slices.Collect(maps.Keys(capture.saved))) {
+				dialog.Response(gtk.RESPONSE_OK)
+			}
+			return true
+		}
 		if !capture.press(keyEvent.HardwareKeyCode(), keyEventSourceName(event)) {
 			return true
 		}
@@ -298,8 +381,21 @@ func ShowKeyPickerDialog(parent *gtk.Window, context KeyPickerContext, otherKeyV
 		return true
 	})
 
+	// Releases are lost while the dialog has no keyboard focus.
+	dialog.Connect("focus-out-event", func() bool {
+		capture.clearPressed()
+		return false
+	})
+	dialog.Connect("grab-broken-event", func() bool {
+		capture.clearPressed()
+		return false
+	})
+
 	dialog.ShowAll()
+	// The daemon must not act on the keys typed into the picker.
+	suspendHotkeysForPicker(true)
 	response := dialog.Run()
+	suspendHotkeysForPicker(false)
 
 	if response == gtk.RESPONSE_OK && len(capture.saved) > 0 {
 		// Collect keycodes from saved combination

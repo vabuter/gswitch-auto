@@ -10,8 +10,12 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
+
+	"github.com/arumata/gswitch/internal/gswitch/ipc"
+	"github.com/arumata/gswitch/internal/gswitch/userconfig"
 )
 
 // App represents the main tray application.
@@ -26,6 +30,19 @@ type App struct {
 	detectionInfo   DetectionInfo
 	discoveryCancel context.CancelFunc
 	quitting        bool
+
+	// gswitch-auto (daemon_client.go). forkConn is the tray's private
+	// session connection for the focus extension helpers (never the shared
+	// dbus.SessionBus() of fyne systray, C27); it is closed in Quit.
+	userDir       string
+	userConfig    *userconfig.Config
+	forkConn      *dbus.Conn
+	forkCancel    context.CancelFunc
+	daemon        *daemonClient
+	autoStatus    ipc.ClientStatus
+	focusExtInfo  FocusExtensionInfo
+	focusExtKnown bool
+	persistError  string
 
 	quitOnce sync.Once
 }
@@ -134,6 +151,9 @@ func (a *App) onTrayReady() {
 	a.configWatcher = configWatcher
 	a.mu.Unlock()
 
+	// gswitch-auto: user configuration, focus extension and daemon client.
+	a.startFork()
+
 	// Create and start layout monitor (only if detection OK)
 	if info.Status == TrayStatusOK {
 		layoutMonitor := NewLayoutMonitor(a.onLayoutChanged)
@@ -197,6 +217,7 @@ func (a *App) Quit() {
 		if configWatcher != nil {
 			configWatcher.Stop()
 		}
+		a.stopFork()
 		if backend != nil {
 			backend.Quit()
 		}
@@ -347,11 +368,15 @@ func (a *App) showFirstRunDialogIfNeeded(info DetectionInfo) {
 			a.OnSettingsClicked()
 		}
 
-		// Create marker file
+		// Create marker file. The directory also holds the gswitch-auto
+		// user configuration: it is created 0700 and forced to 0700 (C23).
 		markerDir := filepath.Dir(markerPath)
-		if err := os.MkdirAll(markerDir, 0o750); err != nil {
+		if err := os.MkdirAll(markerDir, 0o700); err != nil {
 			fmt.Printf("Warning: failed to create marker directory: %v\n", err)
 			return
+		}
+		if err := os.Chmod(markerDir, 0o700); err != nil {
+			fmt.Printf("Warning: failed to restrict marker directory: %v\n", err)
 		}
 		if err := os.WriteFile(markerPath, []byte{}, 0o600); err != nil {
 			fmt.Printf("Warning: failed to create marker file: %v\n", err)

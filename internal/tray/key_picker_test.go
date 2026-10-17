@@ -358,3 +358,119 @@ func TestKeyPickerCapturePhysicalGroupKeyAndReselection(t *testing.T) {
 		t.Fatalf("replacement key = %v", c.saved)
 	}
 }
+
+func TestKeySelectionValidForChordContext(t *testing.T) {
+	gaTestUseLanguage(t, "en")
+	for _, context := range []KeyPickerContext{KeyPickerForChordToggleAuto, KeyPickerForChordConvertSelection} {
+		for _, tt := range []struct {
+			name    string
+			codes   []uint16
+			valid   bool
+			message string
+		}{
+			{"two shifts", []uint16{54, 42}, true, ""},
+			{"selection default", []uint16{100, 42, 97}, true, ""},
+			{"modifier and Pause", []uint16{42, 119}, true, ""},
+			{"single key", []uint16{42}, false, tr(strGAKeyPickerTooShort)},
+			{"text key", []uint16{42, 30}, false, tr(strGAKeyPickerTextKey)},
+			{"space", []uint16{125, 57}, false, tr(strGAKeyPickerTextKey)},
+			{"no modifier", []uint16{59, 60}, false, tr(strGAKeyPickerNeedsModifier)},
+			{"too long", []uint16{29, 42, 54, 56, 97}, false, tr(strGAKeyPickerTooLong)},
+			{"empty", nil, false, ""},
+		} {
+			if got := keySelectionValid(context, tt.codes); got != tt.valid {
+				t.Errorf("%v %s: valid = %v, want %v", context, tt.name, got, tt.valid)
+			}
+			if got := keySelectionMessage(context, tt.codes); got != tt.message {
+				t.Errorf("%v %s: message = %q, want %q", context, tt.name, got, tt.message)
+			}
+		}
+	}
+	// Upstream contexts are unchanged.
+	if !keySelectionValid(KeyPickerForLayoutSwitch, []uint16{42, 30}) || keySelectionValid(KeyPickerForConvertKey, []uint16{42, 54}) {
+		t.Fatal("upstream key picker contexts changed")
+	}
+}
+
+func TestKeyPickerChordContextTexts(t *testing.T) {
+	gaTestUseLanguage(t, "en")
+	if keyPickerTitle(KeyPickerForChordToggleAuto) != tr(strGAKeyPickerTitleToggle) ||
+		keyPickerTitle(KeyPickerForChordConvertSelection) != tr(strGAKeyPickerTitleSelection) {
+		t.Fatal("chord picker titles")
+	}
+	if keyPickerHint(KeyPickerForChordToggleAuto) != tr(strGAKeyPickerHintChord) ||
+		keyPickerHint(KeyPickerForLayoutSwitch) != tr(strKeyPickerHint) {
+		t.Fatal("chord picker hints")
+	}
+	if keyPickerWarningLabel(KeyPickerForChordConvertSelection) != tr(strKeyPickerCurrentLayoutSwitch) {
+		t.Fatal("chord picker warning label")
+	}
+}
+
+func TestKeyPickerCaptureChordKeepsLastFullSet(t *testing.T) {
+	c := &keyPickerCapture{}
+	// Hardware keycodes 50/62 are evdev 42/54 (LShift/RShift).
+	c.press(50, "AT Translated Set 2 keyboard")
+	c.press(62, "AT Translated Set 2 keyboard")
+	c.release(50, "AT Translated Set 2 keyboard")
+	c.release(62, "AT Translated Set 2 keyboard")
+	if len(c.saved) != 2 || c.saved[42] != "LShift" || c.saved[54] != "RShift" {
+		t.Fatalf("saved chord = %v, want {42: LShift, 54: RShift}", c.saved)
+	}
+	if len(c.pressed) != 0 {
+		t.Fatalf("pressed after release = %v", c.pressed)
+	}
+	if !keySelectionValid(KeyPickerForChordToggleAuto, []uint16{42, 54}) {
+		t.Fatal("captured chord not accepted")
+	}
+}
+
+func TestKeyPickerEnterPassthrough(t *testing.T) {
+	const enter, kpEnter, escape, lshift = 36, 104, 9, 50 // XKB = evdev + 8
+	for _, tt := range []struct {
+		name     string
+		context  KeyPickerContext
+		hardware uint16
+		pressed  map[uint16]string
+		want     bool
+	}{
+		{"enter", KeyPickerForChordToggleAuto, enter, nil, true},
+		{"keypad enter", KeyPickerForChordConvertSelection, kpEnter, nil, true},
+		{"escape", KeyPickerForChordToggleAuto, escape, map[uint16]string{}, true},
+		{"enter with a held key", KeyPickerForChordToggleAuto, enter, map[uint16]string{42: "LShift"}, false},
+		{"other key", KeyPickerForChordToggleAuto, lshift, nil, false},
+		{"upstream layout switch", KeyPickerForLayoutSwitch, enter, nil, false},
+		{"upstream convert key", KeyPickerForConvertKey, escape, nil, false},
+	} {
+		if got := keyPickerPassthrough(tt.context, tt.hardware, tt.pressed); got != tt.want {
+			t.Errorf("%s: passthrough = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestKeyPickerFocusOutClearsPressed(t *testing.T) {
+	c := &keyPickerCapture{}
+	c.press(50, "USB Keyboard") // LShift held when the dialog loses focus
+	c.clearPressed()
+	if len(c.pressed) != 0 || c.saved[42] != "LShift" {
+		t.Fatalf("after focus-out: pressed=%v saved=%v", c.pressed, c.saved)
+	}
+	// The lost release no longer glues LShift to the next chord.
+	c.press(62, "USB Keyboard")
+	if len(c.saved) != 1 || c.saved[54] != "RShift" {
+		t.Fatalf("next chord = %v, want {54: RShift}", c.saved)
+	}
+}
+
+func TestKeyPickerSuspendHook(t *testing.T) {
+	var calls []bool
+	setKeyPickerSuspend(func(suspend bool) { calls = append(calls, suspend) })
+	defer setKeyPickerSuspend(nil)
+	suspendHotkeysForPicker(true)
+	suspendHotkeysForPicker(false)
+	if len(calls) != 2 || !calls[0] || calls[1] {
+		t.Fatalf("suspend calls = %v", calls)
+	}
+	setKeyPickerSuspend(nil)
+	suspendHotkeysForPicker(true) // no hook: no panic
+}

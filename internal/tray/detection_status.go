@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -31,6 +32,9 @@ type DetectionInfo struct {
 	ErrorMessageID string   // Own status messages are translated at display time.
 	Warning        string   // Warning message if any
 	Attempts       []string // Provider attempts for diagnostics
+	// Scancodes are the detected (or configured) layout switch keys; the
+	// settings window checks hotkey chords against them.
+	Scancodes []uint16
 }
 
 // detectJSONOutput mirrors the JSON structure from gswitch --detect-layout-switch.
@@ -97,6 +101,7 @@ func CheckDetectionStatus(sm *ServiceManager) DetectionInfo {
 		info.Status = TrayStatusOK
 		info.KeyNames = formatKeyValue(cfg.LayoutSwitch)
 		info.Source = "config"
+		info.Scancodes = layoutSwitchScancodes(cfg.LayoutSwitch)
 		return info
 	}
 
@@ -120,6 +125,13 @@ func runDetection() DetectionInfo {
 	// #nosec G204 - gswitch is a known binary found via findGswitchBinary
 	cmd := exec.Command(gswitchPath, "--detect-layout-switch")
 	output, err := cmd.Output()
+	return detectionInfoFromOutput(output, err)
+}
+
+// detectionInfoFromOutput maps the JSON printed by gswitch
+// --detect-layout-switch (and the command error) to DetectionInfo.
+func detectionInfoFromOutput(output []byte, err error) DetectionInfo {
+	info := DetectionInfo{}
 
 	// Parse JSON regardless of exit code (exit code indicates status)
 	var result detectJSONOutput
@@ -146,6 +158,7 @@ func runDetection() DetectionInfo {
 		if result.Result != nil {
 			info.Source = result.Result.Source
 			info.KeyNames = result.Result.Keys
+			info.Scancodes = append([]uint16(nil), result.Result.Scancodes...)
 		}
 		info.Warning = result.Warning
 	case "not_found":
@@ -156,6 +169,25 @@ func runDetection() DetectionInfo {
 	}
 
 	return info
+}
+
+// layoutSwitchScancodes parses an explicit layout-switch value ("56+42",
+// "58"). It returns nil for "auto", "custom" and anything unparsable.
+func layoutSwitchScancodes(value string) []uint16 {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "auto" || value == "custom" {
+		return nil
+	}
+	parts := strings.Split(value, "+")
+	codes := make([]uint16, 0, len(parts))
+	for _, part := range parts {
+		code, err := strconv.ParseUint(strings.TrimSpace(part), 10, 16)
+		if err != nil || code == 0 {
+			return nil
+		}
+		codes = append(codes, uint16(code))
+	}
+	return codes
 }
 
 // formatDetectionError formats an error from running gswitch CLI into a user-friendly message.

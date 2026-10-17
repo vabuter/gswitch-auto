@@ -37,6 +37,17 @@ type Translator struct {
 // Builtin contains the translations shipped in the binary.
 var Builtin = builtin()
 
+// ForkKeyPrefix marks message IDs added by the gswitch-auto fork. Fork
+// messages are required only in ForkLocales; other catalogs fall back to
+// English for them (Text).
+const ForkKeyPrefix = "strGA"
+
+// ForkLocales lists the catalogs that must translate every fork message.
+var ForkLocales = []string{"en", "ru"}
+
+// IsForkKey reports whether key is a fork message ID.
+func IsForkKey(key string) bool { return strings.HasPrefix(key, ForkKeyPrefix) }
+
 func builtin() *Bundle {
 	root, err := fs.Sub(files, "locales")
 	if err != nil {
