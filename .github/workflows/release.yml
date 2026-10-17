@@ -1,6 +1,9 @@
-# Release workflow for gswitch
-# Triggered by pushing a tag matching v* (e.g., v1.0.0, v1.2.3-rc1)
-# Creates GitHub Release with DEB, RPM packages and checksums
+# Release workflow for gswitch-auto (fork of gswitch)
+# Triggered by pushing a fork tag v<upstream>+auto.<N> (e.g. v0.8.0+auto.1).
+# Builds the RPM with scripts/build-rpm.sh (tests and RPM assertions included)
+# and publishes it with checksums.txt as a GitHub release. Uses only the
+# automatic GITHUB_TOKEN; no repository secrets. Upstream's OBS job is not part
+# of the fork (obs.yml stays guarded to arumata/gswitch).
 
 name: Release
 
@@ -14,129 +17,86 @@ permissions:
 
 jobs:
   release:
+    # "+" is a glob repeat operator in tag filters, so select fork tags here.
+    if: contains(github.ref_name, '+auto.')
     runs-on: ubuntu-24.04
 
     steps:
-      # Checkout with full history for git describe (version detection)
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      # Setup Go with version from go.mod
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      # Install build dependencies for gswitch-tray (GTK)
-      # Required for CGO compilation of GTK bindings
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            cpio \
             libgtk-3-dev \
             libxkbcommon-dev \
             libx11-dev \
-            rpm
+            rpm \
+            rpm2cpio
 
-      # Run GoReleaser to build and publish release
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
-        with:
-          version: '~> v2'
-          args: release --clean
+      # Lets build-rpm.sh compare the packaged unit with upstream's tag.
+      - name: Fetch upstream release tags
+        run: |
+          if ! git describe --tags --abbrev=0 --match 'v[0-9]*' \
+              --exclude '*+*' --exclude '*-*' HEAD >/dev/null 2>&1; then
+            git fetch --no-tags https://github.com/arumata/gswitch.git 'refs/tags/v*:refs/tags/v*'
+          fi
+
+      - name: Determine version
+        id: version
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          computed=$(scripts/version.sh)
+          if [ "$computed" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match scripts/version.sh ($computed)" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+
+      - name: Build RPM
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/build-rpm.sh --version "$VERSION" --release 1 --out dist
 
-      # Smoke test: verify DEB package contents
-      - name: Verify DEB package contents
-        shell: bash
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "=== DEB packages ==="
-          shopt -s nullglob
-          debs=(dist/*.deb)
-          if (( ${#debs[@]} == 0 )); then
-            echo "No .deb artifacts found in dist/ (expected at least one)." >&2
-            exit 1
-          fi
-          for deb in "${debs[@]}"; do
-            echo "--- $deb ---"
-            contents=$(dpkg-deb --fsys-tarfile "$deb" | tar -tf -)
-            grep -qx './usr/lib/systemd/user/gswitch.service' <<<"$contents"
-            grep -qx './etc/xdg/autostart/gswitch-daemon.desktop' <<<"$contents"
-            grep -qx './usr/lib/udev/rules.d/70-gswitch.rules' <<<"$contents"
-            if grep -qx './usr/lib/systemd/system/gswitch.service' <<<"$contents"; then
-              echo "legacy root system unit is still packaged" >&2
-              exit 1
-            fi
-            echo ":: Key files:"
-            dpkg -c "$deb" | grep -E '(gswitch|systemd|udev|hicolor|polkit)' || true
+          base=$(scripts/version.sh --base)
+          rpm_name="gswitch-auto-$VERSION-1.x86_64.rpm"
+          {
+            echo "gswitch-auto $VERSION: fork of [gswitch](https://github.com/arumata/gswitch) v$base with automatic us/ru correction for GNOME Wayland + IBus."
             echo ""
-            echo ":: Package info:"
-            dpkg-deb -I "$deb" | head -15
+            echo "Install on Fedora (replaces the upstream gswitch package):"
             echo ""
-          done
+            echo '```bash'
+            echo "sha256sum -c checksums.txt"
+            echo "sudo dnf install ./$rpm_name"
+            echo "systemctl --user enable --now gswitch.service"
+            echo '```'
+            echo ""
+            echo "Then log out and back in once for the GNOME Shell extension. See README.md and docs/FORK.md."
+          } >notes.md
+          gh release create "$GITHUB_REF_NAME" "dist/$rpm_name" dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "gswitch-auto $VERSION" \
+            --notes-file notes.md \
+            --verify-tag
 
-      # Smoke test: verify RPM package contents
-      - name: Verify RPM package contents
-        shell: bash
-        run: |
-          echo "=== RPM packages ==="
-          shopt -s nullglob
-          rpms=(dist/*.rpm)
-          if (( ${#rpms[@]} == 0 )); then
-            echo "No .rpm artifacts found in dist/ (expected at least one)." >&2
-            exit 1
-          fi
-          for rpm_file in "${rpms[@]}"; do
-            echo "--- $rpm_file ---"
-            contents=$(rpm -qlp "$rpm_file")
-            grep -qx '/usr/lib/systemd/user/gswitch.service' <<<"$contents"
-            grep -qx '/etc/xdg/autostart/gswitch-daemon.desktop' <<<"$contents"
-            grep -qx '/usr/lib/udev/rules.d/70-gswitch.rules' <<<"$contents"
-            if grep -qx '/usr/lib/systemd/system/gswitch.service' <<<"$contents"; then
-              echo "legacy root system unit is still packaged" >&2
-              exit 1
-            fi
-            echo ":: Key files:"
-            rpm -qlp "$rpm_file" | grep -E '(gswitch|systemd|udev|hicolor|polkit)' || true
-            echo ""
-            echo ":: Package dependencies:"
-            rpm -qpR "$rpm_file"
-            echo ""
-          done
-
-      # List all artifacts for verification
       - name: List release artifacts
-        shell: bash
         run: |
-          echo "=== Release artifacts ==="
-          ls -lh dist/*.deb dist/*.rpm dist/*.tar.gz dist/checksums.txt 2>/dev/null || true
-          echo ""
-          echo "=== Checksums ==="
-          if [[ ! -f dist/checksums.txt ]]; then
-            echo "dist/checksums.txt not found (expected checksums to be generated)." >&2
-            exit 1
-          fi
+          ls -lh dist/
           cat dist/checksums.txt
-
-  obs:
-    name: Build and verify OBS package
-    needs: release
-    if: >-
-      github.repository == 'arumata/gswitch' &&
-      vars.OBS_ENABLED == 'true' &&
-      startsWith(github.ref, 'refs/tags/v') &&
-      !contains(github.ref_name, '-')
-    permissions:
-      contents: read
-    uses: ./.github/workflows/obs.yml
-    with:
-      tag: ${{ github.ref_name }}
-      commit: ${{ github.sha }}
-      target: main
-      mode: update
-    secrets:
-      OBS_USERNAME: ${{ secrets.OBS_USERNAME }}
-      OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
