@@ -5,3 +5,6 @@ dist/
 .idea/
 .vscode/
 __pycache__/
+
+# local artifacts
+*.rpm
