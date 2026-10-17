@@ -1,0 +1,252 @@
+# nFPM configuration for the gswitch-auto RPM (fork of gswitch).
+#
+# Single source of packaging metadata: upstream's .goreleaser.yml was removed
+# and its nfpms section is mirrored here (see docs/FORK.md). Built by
+# scripts/build-rpm.sh (`make rpm`), which exports:
+#
+#   GSWITCH_VERSION  e.g. 0.8.0+auto.1 (scripts/version.sh)
+#   GSWITCH_RELEASE  e.g. 1
+#
+# and runs nfpm from the repository root (src paths are relative to it).
+# Binaries are built into builds/ by the same script before packaging.
+#
+# Manual run:
+#   GSWITCH_VERSION=0.8.0+auto.1 GSWITCH_RELEASE=1 \
+#     nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+
+name: gswitch-auto
+arch: amd64
+platform: linux
+version: ${GSWITCH_VERSION}
+# Keep "+auto.N" verbatim: the semver schema would split it into metadata.
+version_schema: none
+release: ${GSWITCH_RELEASE}
+# Applied to modes taken from the checkout (shell-extension tree): never
+# ship group/world-writable files, whatever the builder's umask was.
+umask: 0022
+
+section: utils
+priority: optional
+vendor: gswitch-auto
+homepage: https://github.com/vabuter/gswitch-auto
+maintainer: vabuter <https://github.com/vabuter/gswitch-auto>
+license: MIT AND BSD-3-Clause-Modification AND LicenseRef-Fedora-Public-Domain
+description: |
+  Keyboard layout switcher with text correction for Linux (fork of gswitch).
+  Corrects text typed in the wrong keyboard layout. Manual correction works
+  exactly as in upstream gswitch (double Shift and the other gestures). The
+  fork adds automatic correction of the last word for the us/ru layout pair
+  on GNOME Wayland with IBus, triggered by Space and toggled with
+  LShift+RShift (off by default), exception lists and a GNOME Shell
+  extension that reports the focused application for exclusions.
+  Includes the system tray application.
+
+# Replaces the upstream package in place: same binary names and file paths.
+# RPM Obsoletes + Provides perform the replacement; there is deliberately no
+# Conflicts entry (an unversioned "Conflicts: gswitch" would match our own
+# Provides, rpmlint self-conflict). Bump the Obsoletes bound when rebasing
+# onto an upstream release >= the bound (docs/FORK.md, scripts/version.sh
+# --verify checks it).
+provides:
+  - gswitch = ${GSWITCH_VERSION}-${GSWITCH_RELEASE}
+replaces:
+  - gswitch < 0.9
+
+depends:
+  - systemd
+  - gtk3
+recommends:
+  - desktop-file-utils
+  - wl-clipboard
+suggests:
+  - gnome-shell-extension-appindicator
+
+rpm:
+  group: Applications/System
+  summary: Keyboard layout corrector with automatic us/ru mode (gswitch fork)
+  scripts:
+    # Hand the user unit's enablement over across the Obsoletes erase of the
+    # upstream package (upstream preremove.sh disables it with $1=0).
+    pretrans: scripts/pretrans.sh
+    posttrans: scripts/posttrans.sh
+
+# Upstream maintainer scripts, unchanged (modprobe uinput, udev reload and
+# trigger, per-user daemon-reload/restart, icon cache, desktop database).
+scripts:
+  preinstall: scripts/preinstall.sh
+  postinstall: scripts/postinstall.sh
+  preremove: scripts/preremove.sh
+  postremove: scripts/postremove.sh
+
+# DEB is kept buildable from the same file but is not published (SPEC Q9).
+# RPM-only content types (license, doc) are skipped by nfpm for DEB.
+overrides:
+  deb:
+    depends:
+      - systemd
+      - libgtk-3-0
+    recommends:
+      - libgtk-3-bin
+      - desktop-file-utils
+      - wl-clipboard
+    provides:
+      - gswitch (= ${GSWITCH_VERSION}-${GSWITCH_RELEASE})
+    replaces:
+      - gswitch (<< 0.9)
+    conflicts:
+      - gswitch (<< 0.9)
+
+contents:
+  # --- binaries (goreleaser added these via builds/bindir; listed explicitly) ---
+  - src: builds/gswitch
+    dst: /usr/bin/gswitch
+    file_info:
+      mode: 0755
+  - src: builds/gswitch-tray
+    dst: /usr/bin/gswitch-tray
+    file_info:
+      mode: 0755
+
+  # --- gswitch daemon files (as upstream .goreleaser.yml) ---
+  - dst: /etc/gswitch
+    type: dir
+    file_info:
+      mode: 0755
+
+  # Systemd user service unit, byte-identical to upstream (SPEC D2)
+  - src: configs/gswitch.service
+    dst: /usr/lib/systemd/user/gswitch.service
+    file_info:
+      mode: 0644
+
+  # Udev rules for /dev/uinput and keyboard access (uaccess)
+  - src: configs/70-gswitch.rules
+    dst: /usr/lib/udev/rules.d/70-gswitch.rules
+    file_info:
+      mode: 0644
+
+  # Default configuration file (preserved on upgrade)
+  - src: configs/default.conf
+    dst: /etc/gswitch/default.conf
+    type: config
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: configs/default.conf
+    dst: /etc/gswitch/default.conf
+    type: config|noreplace
+    packager: rpm
+    file_info:
+      mode: 0644
+
+  # --- gswitch-tray files ---
+  - src: configs/gswitch-tray.desktop
+    dst: /etc/xdg/autostart/gswitch-tray.desktop
+    file_info:
+      mode: 0644
+  - src: configs/gswitch-daemon.desktop
+    dst: /etc/xdg/autostart/gswitch-daemon.desktop
+    file_info:
+      mode: 0644
+  - src: configs/gswitch-tray.desktop
+    dst: /usr/share/applications/gswitch-tray.desktop
+    file_info:
+      mode: 0644
+
+  # Polkit policy for the tray's --write-config
+  - src: configs/com.github.arumata.gswitch.policy
+    dst: /usr/share/polkit-1/actions/com.github.arumata.gswitch.policy
+    file_info:
+      mode: 0644
+
+  # Icons
+  - src: assets/icons/hicolor/16x16/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/16x16/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/22x22/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/22x22/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/24x24/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/24x24/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/32x32/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/32x32/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/48x48/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/48x48/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/64x64/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/64x64/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/128x128/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/128x128/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/256x256/apps/gswitch.png
+    dst: /usr/share/icons/hicolor/256x256/apps/gswitch.png
+    file_info:
+      mode: 0644
+  - src: assets/icons/hicolor/scalable/apps/gswitch.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/gswitch.svg
+    file_info:
+      mode: 0644
+
+  # --- fork additions ---
+
+  # GNOME Shell extension reporting the focused application (SPEC §3.5).
+  # UUID == directory name == focus.ExtensionUUID (scripts/check-extension.sh).
+  # No file_info here: for a tree nfpm would apply the mode to directories too;
+  # files and directories keep their checkout modes (0644/0755).
+  - src: shell-extension/gswitch-focus@vabuter.github.io
+    dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io
+    type: tree
+
+  # Licences: the fork, the embedded punto-rs models (hunspell-ru derivative,
+  # see THIRD-PARTY-NOTICES.md) and the vendored clipboard package.
+  - src: LICENSE
+    dst: /usr/share/licenses/gswitch-auto/LICENSE
+    type: license
+    file_info:
+      mode: 0644
+  - src: third_party/punto-rs/LICENSE
+    dst: /usr/share/licenses/gswitch-auto/punto-rs-LICENSE
+    type: license
+    file_info:
+      mode: 0644
+  - src: third_party/punto-rs/hunspell-ru-LICENSE
+    dst: /usr/share/licenses/gswitch-auto/hunspell-ru-LICENSE
+    type: license
+    file_info:
+      mode: 0644
+  - src: third_party/punto-rs/NOTICE.md
+    dst: /usr/share/licenses/gswitch-auto/THIRD-PARTY-NOTICES.md
+    type: license
+    file_info:
+      mode: 0644
+  - src: third_party/clipboard/LICENSE
+    dst: /usr/share/licenses/gswitch-auto/clipboard-LICENSE
+    type: license
+    file_info:
+      mode: 0644
+
+  - src: README.md
+    dst: /usr/share/doc/gswitch-auto/README.md
+    type: doc
+    file_info:
+      mode: 0644
+
+  # Own the package's documentation and licence directories.
+  - dst: /usr/share/licenses/gswitch-auto
+    type: dir
+    file_info:
+      mode: 0755
+  - dst: /usr/share/doc/gswitch-auto
+    type: dir
+    file_info:
+      mode: 0755

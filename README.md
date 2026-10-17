@@ -1,3 +1,217 @@
+# gswitch-auto
+
+[![CI](https://github.com/vabuter/gswitch-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/vabuter/gswitch-auto/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/vabuter/gswitch-auto)](https://github.com/vabuter/gswitch-auto/releases)
+[![Upstream](https://img.shields.io/badge/upstream-arumata%2Fgswitch-informational)](https://github.com/arumata/gswitch)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## About this fork
+
+**gswitch-auto** is a fork of [gswitch](https://github.com/arumata/gswitch)
+that adds Punto Switcher-style **automatic correction** of the last word typed
+in the wrong keyboard layout. Upstream declined automatic correction (issues
+#12 and #31), so this is a separate fork that is rebased onto every upstream
+release ([docs/FORK.md](docs/FORK.md), in Russian). Please report problems with
+the fork [here](https://github.com/vabuter/gswitch-auto/issues), not upstream.
+
+> **Status:** in development. The first release will be `v0.8.0+auto.1`.
+
+What the fork adds on top of upstream 0.8.0:
+
+- **Automatic mode, off by default.** When you press <kbd>Space</kbd> after a
+  word that is clearly English typed in the Russian layout or Russian typed in
+  the English layout (`ghbdtn` → `привет`, `руддщ` → `hello`), the daemon
+  waits for a short pause, erases the word, switches the layout and retypes it.
+  The layout stays switched, so you can keep typing. <kbd>Enter</kbd> never
+  triggers a correction, and any key pressed during the pause cancels it.
+- **Undo.** Double <kbd>Shift</kbd> right after an automatic correction
+  restores the original word and layout. The undone word can be learned as an
+  exception.
+- **Toggle chord.** Press <kbd>LShift</kbd>+<kbd>RShift</kbd> together and
+  release them to turn automatic mode on or off. The tray menu shows the state,
+  and the setting is saved.
+- **Selection chord.** <kbd>LShift</kbd>+<kbd>RAlt</kbd>+<kbd>RCtrl</kbd>
+  converts the selected text; upstream's Ctrl + double Shift still works.
+  Press Shift first: with RAlt first, GNOME's `<Alt>Shift_L` layout shortcut
+  can fire, and the daemon then restores the layout.
+- **Exceptions.** A list of words that are never corrected and a list of
+  applications where automatic mode is off. Terminals, password fields and the
+  lock screen are skipped by default.
+- **Settings.** The tray's settings window gets an "Auto correction" tab with
+  all of the above, configurable hotkeys, and service controls (start, stop,
+  restart, start at login, status). The fork's new interface strings exist in
+  English and **Russian**; upstream's other interface languages show them in
+  English.
+
+All upstream gestures keep working unchanged: double Shift for the last word,
+the held-Shift phrase gesture, Ctrl + double Shift for the selection, case
+swap, a custom convert key, and undo by repeating the trigger.
+
+**Scope.** Automatic mode supports the `us` + `ru` layout pair on GNOME Shell
+50 under Wayland with IBus (the active layout is read from IBus); packages are
+built for Fedora 44, x86_64. On X11, KDE, other layout pairs or without IBus,
+automatic mode reports itself as unavailable and gswitch behaves exactly like
+upstream. The language detector is a Go port of
+[punto-rs](https://github.com/rashevskyv/punto-rs)' Bloom filter and
+letter-trigram model. It runs locally in microseconds, with no network access
+and no LLM.
+
+### Install
+
+```bash
+make rpm                                      # or download the RPM from Releases
+sudo dnf install ./dist/gswitch-auto-*.rpm    # replaces the upstream gswitch package
+systemctl --user enable --now gswitch.service # only if it is not already running
+```
+
+The `gswitch-auto` package provides `gswitch`, obsoletes `gswitch < 0.9` and
+keeps the binary names and file paths, so it replaces an installed upstream
+package in place. If upstream's service was enabled, the package enables it again
+after the replacement. Log out and back in once afterwards, so that GNOME Shell
+loads the bundled extension (needed for application exclusions). Rollback:
+`sudo dnf swap gswitch-auto ./gswitch_0.8.0_linux_amd64.rpm`, then
+`systemctl --user enable --now gswitch.service`. Build requirements and make
+targets are listed in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Configuration: `~/.config/gswitch`
+
+`/etc/gswitch/default.conf` keeps upstream's meaning. Fork settings are stored
+per user in `$XDG_CONFIG_HOME/gswitch` (usually `~/.config/gswitch`, mode 0700,
+files 0600) next to upstream's `ui.conf`. The tray writes these files; the
+daemon only reads them and picks up changes without a restart.
+
+`auto.conf` uses upstream's `key=value` syntax (`#` comments):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `auto-enabled` | `false` | Automatic mode on/off (also toggled by the chord, the tray and D-Bus) |
+| `auto-min-letters` | `3` | Shortest word that is checked (2–8) |
+| `auto-max-letters` | `24` | Longest word that is checked (4–64) |
+| `auto-short-words` | `true` | Also fix common two-letter words from a closed list |
+| `auto-margin` | `1.0` | Required detector margin, bits per letter (0–5) |
+| `auto-max-alt-cost` | `7.0` | Maximum trigram cost of the converted word (3–25.5) |
+| `auto-holdoff-ms` | `120` | Quiet time after Space before a correction fires (30–1000) |
+| `auto-min-interval-ms` | `1000` | Minimum time between two corrections (0–10000) |
+| `auto-delay-ms` | `3` | Delay between replayed key events; `0` uses upstream `delay` |
+| `auto-switch-delay-ms` | `60` | Pause after the confirmed layout switch; `0` uses upstream `layout-switch-delay` |
+| `auto-learn-on-undo` | `true` | Add an undone word to the exception list |
+| `auto-learn-undo-count` | `1` | Undos of the same word before it is learned (1–10) |
+| `auto-require-focus` | `false` | Disable automatic mode while the GNOME Shell extension is unavailable |
+| `auto-skip-password` | `true` | Skip password and PIN fields |
+| `auto-skip-terminal` | `true` | Skip terminals |
+| `auto-skip-locked` | `true` | Skip while the screen is locked |
+| `hotkey-toggle-auto` | `42+54` | Toggle chord as evdev scancodes (LShift+RShift), or `none` |
+| `hotkey-convert-selection` | `42+97+100` | Selection chord (LShift+RCtrl+RAlt), or `none` |
+| `ipc-expose-words` | `true` | Include corrected and learned words in D-Bus properties and signals |
+| `focus-source` | `auto` | `auto` or `off` (restart required) |
+| `layout-source` | `auto` | `auto`, `ibus` or `none` (restart required) |
+| `layout-hint-timeout-ms` | `400` | How long a physical layout-switch chord marks the layout as pending (restart required) |
+
+Invalid values fall back to the default with a warning; unknown keys are
+ignored. `exceptions-words.txt` and `exceptions-apps.txt` hold one entry per
+line (`#` starts a comment). Words are matched case-insensitively against the
+word as it appeared on screen before the correction, with `ё` folded to `е`
+and edge punctuation ignored. Applications are matched by GNOME desktop id or
+WM_CLASS (`org.gnome.Ptyxis`, `kitty`; `*` and `?` wildcards work); the
+default list contains common terminals and KeePassXC.
+
+### Command line additions
+
+```text
+gswitch --auto-check <text> [--shown us|ru]  # run the detector on a word, JSON verdict
+gswitch --layout-state [--watch SECONDS]     # show the IBus layout tracker state
+```
+
+`--auto-check ghbdtn --shown us` reports a fix to `привет`; `--layout-state`
+prints the IBus bus address and the active engine (`xkb:us::eng` → 0). Neither
+needs root or input devices.
+
+### D-Bus interface
+
+The daemon owns `io.github.vabuter.GswitchAuto` on the session bus (object
+`/io/github/vabuter/GswitchAuto`, same interface name). It is not
+bus-activatable; the systemd user unit is the only launcher. A second daemon
+instance (for example `gswitch --debug` next to the service) runs without IPC.
+
+- Properties: `AutoEnabled` (read-write), `AutoEnabledUnsaved`,
+  `PendingLearnedWords`, `AutoAvailable`, `AutoUnavailableReason`,
+  `ActiveLayout`, `LayoutKnown`, `LayoutSource`, `FocusSource`, `FocusedApp`,
+  `FocusedWmClass`, `InputPurpose`, `FocusSuppressed`,
+  `FocusSuppressedReason`, `LastCorrection`, `CorrectionCount`, `Stats`,
+  `ToggleChord`, `SelectionChord`, `HotkeysSuspended`, `ConfigDir`,
+  `ConfigWarnings`, `Version`.
+- Methods: `SetAutoEnabled(b)`, `Reload()`, `SuspendHotkeys(b)` (used by the
+  key picker; released when the caller disconnects or after 120 s).
+- Signals: `AutoEnabledChanged(b enabled, s source)`,
+  `Corrected(s from, s to, s direction, t time)`,
+  `CorrectionUndone(s word, b learned)`.
+
+```bash
+busctl --user introspect io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto
+busctl --user set-property io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto \
+    io.github.vabuter.GswitchAuto AutoEnabled b true
+```
+
+### GNOME Shell extension
+
+GNOME Wayland does not tell other programs which window has focus, so the
+package installs a small extension, `gswitch-focus@vabuter.github.io`, into
+`/usr/share/gnome-shell/extensions/`. It publishes the focused application's
+desktop id, its WM_CLASS and the purpose of the focused text field (normal,
+password, terminal, …) as `org.gnome.Shell.Extensions.GswitchFocus` on the
+session bus. It exposes no window titles, no text and no process ids, and it
+is disabled by GNOME Shell on the lock screen.
+
+GNOME Shell loads new or updated extensions only at login: log out and back in
+after installing or upgrading, then enable it in the tray settings or with
+`gnome-extensions enable gswitch-focus@vabuter.github.io`. Without the
+extension, application exclusions and password/terminal detection are
+inactive and automatic mode keeps working elsewhere; set
+`auto-require-focus=true` to turn automatic mode off instead.
+
+### Privacy and persistence
+
+- The daemon keeps upstream's sandbox: the systemd user unit is unchanged
+  (`ProtectHome=read-only`), and the daemon writes nothing under `$HOME`.
+  New connections are the session bus and the IBus bus (both AF_UNIX); there
+  is still no network code.
+- Typed text is not stored. The only words written to disk are exception
+  words: the ones you add, and words learned on undo, which the tray appends
+  to `exceptions-words.txt` (0600).
+- Corrected and learned words appear on the session bus (`Corrected`,
+  `LastCorrection`, `CorrectionUndone`, `PendingLearnedWords`) only while
+  `ipc-expose-words=true`; with `false`, words learned on undo stay in daemon
+  memory and are not saved. The daemon never logs words unless run with
+  `--debug` and `GSWITCH_AUTO_LOG_WORDS=1`.
+- Because the daemon cannot write to your home directory, a toggle made with
+  the chord or over D-Bus and words learned on undo are saved by the tray.
+  Without a running tray they last until the daemon restarts; the tray saves
+  them when it starts again.
+
+### Credits
+
+- [gswitch](https://github.com/arumata/gswitch) by arumata and contributors
+  (MIT): everything this fork builds on.
+- [punto-rs](https://github.com/rashevskyv/punto-rs) (MIT, © 2026
+  netherguy4): the language detector design and the embedded models.
+- The Russian model is a modified form of the Russian hunspell dictionary
+  (hunspell-ru 0.99g5, © 1997–2008 Alexander I. Lebedev,
+  BSD-3-Clause-Modification), stored as a Bloom filter and a letter-trigram
+  model; the English model derives from the public-domain `words` list
+  (`/usr/share/dict/words`). The Ukrainian model of punto-rs is not included.
+  Licence texts
+  and notices are installed under `/usr/share/licenses/gswitch-auto/`; see
+  `third_party/punto-rs/NOTICE.md`.
+
+---
+
+*The rest of this file is upstream gswitch's README, kept as is. Where it says
+that gswitch does not guess your language or changes text only when you press
+a trigger, it describes the manual mode; automatic mode is opt-in. Fork
+packages are named `gswitch-auto`, come from
+[this fork's releases](https://github.com/vabuter/gswitch-auto/releases), and
+are built with nfpm (`scripts/build-rpm.sh`) rather than GoReleaser.*
+
 # gswitch
 
 [![Release](https://img.shields.io/github/v/release/arumata/gswitch)](https://github.com/arumata/gswitch/releases)

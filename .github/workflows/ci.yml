@@ -1,5 +1,6 @@
-# CI workflow for gswitch
-# Runs build, tests and linters on every push and pull request
+# CI workflow for gswitch-auto (fork of gswitch)
+# Runs build, tests and linters, builds and checks the RPM, and installs it
+# over upstream gswitch v0.8.0 in a Fedora 44 container. Needs no secrets.
 
 name: CI
 
@@ -19,21 +20,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # scripts/version.sh derives the package version from tags
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      # GTK is required for CGO compilation of the tray application
+      # GTK is required for CGO compilation of the tray application;
+      # rpm, rpm2cpio and cpio for the RPM assertions; shellcheck for scripts/
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             awesome \
+            cpio \
             libgtk-3-dev \
             libxkbcommon-dev \
             libx11-dev \
+            rpm \
+            rpm2cpio \
+            shellcheck \
             x11-utils \
             xdotool \
             xvfb
@@ -52,6 +61,105 @@ jobs:
           mkdir -p builds
           go build -o builds/gswitch-tray ./cmd/gswitch-tray
           NO_AT_BRIDGE=1 xvfb-run -a python3 .github/scripts/tray_awesome_smoke.py --tray ./builds/gswitch-tray
+
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Scriptlets tolerate an empty environment
+        run: |
+          env -i PATH=/nonexistent /bin/sh scripts/pretrans.sh
+          env -i PATH=/nonexistent /bin/sh scripts/posttrans.sh
+
+      # The version is <upstream base>+auto.<N>; the base comes from the
+      # nearest upstream vX.Y.Z tag, which the fork's remote may not carry.
+      - name: Fetch upstream release tags
+        run: |
+          if ! git describe --tags --abbrev=0 --match 'v[0-9]*' \
+              --exclude '*+*' --exclude '*-*' HEAD >/dev/null 2>&1; then
+            git fetch --no-tags https://github.com/arumata/gswitch.git 'refs/tags/v*:refs/tags/v*'
+          fi
+
+      - name: Version rules
+        run: scripts/version.sh --verify
+
+      - name: Extension check
+        run: scripts/check-extension.sh --strict
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+
+      - name: Build RPM and assert metadata
+        run: scripts/build-rpm.sh --skip-tests --out dist
+
+      - name: Upload RPM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rpm
+          path: |
+            dist/*.rpm
+            dist/checksums.txt
+          if-no-files-found: error
+
+  install-test:
+    name: Install over upstream (Fedora 44)
+    needs: build-test
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:44
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Download RPM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rpm
+          path: dist
+
+      - name: Install upstream gswitch v0.8.0
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || dnf install -y curl
+          url=https://github.com/arumata/gswitch/releases/download/v0.8.0
+          mkdir -p upstream
+          curl -fsSL -o upstream/gswitch_0.8.0_linux_amd64.rpm "$url/gswitch_0.8.0_linux_amd64.rpm"
+          curl -fsSL -o upstream/checksums.txt "$url/checksums.txt"
+          (cd upstream && sha256sum -c --ignore-missing checksums.txt)
+          dnf install -y ./upstream/gswitch_0.8.0_linux_amd64.rpm
+          rpm -q gswitch
+
+      - name: Install gswitch-auto over it
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c checksums.txt)
+          dnf install -y ./dist/gswitch-auto-*.rpm
+
+      - name: Assert replacement
+        run: |
+          set -euo pipefail
+          if rpm -q gswitch; then
+            echo "upstream gswitch was not obsoleted" >&2
+            exit 1
+          fi
+          rpm -q gswitch-auto
+          test "$(rpm -q --whatprovides gswitch --qf '%{NAME}\n')" = gswitch-auto
+          rpm -q --obsoletes gswitch-auto | grep -qx 'gswitch < 0.9'
+          test -z "$(rpm -q --conflicts gswitch-auto)"
+          rpm -V gswitch-auto
+          version=$(rpm -q --qf '%{VERSION}' gswitch-auto)
+          test "$(gswitch --version)" = "gswitch version $version"
+          test -f /usr/lib/systemd/user/gswitch.service
+          test -f /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/metadata.json
+          test ! -e /usr/lib/systemd/system/gswitch.service
+          test ! -e /run/gswitch-auto
+
+      - name: Remove gswitch-auto
+        run: |
+          set -euo pipefail
+          dnf remove -y gswitch-auto
+          test ! -e /usr/bin/gswitch
+          test ! -e /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io
 
   lint:
     runs-on: ubuntu-24.04
