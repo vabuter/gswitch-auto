@@ -86,6 +86,10 @@ type Switcher struct {
 	// GNOME Wayland can occasionally drop the configured shortcut. Confirm its
 	// input-source state before mutating text and retry the shortcut once.
 	verifyGNOMEWaylandLayoutSwitch bool
+
+	// gswitch-auto (fork)
+	layoutReaderFn func() layoutStateReader // nil: upstream gsettings reader (layoutReader)
+	onOwnSwitch    func()                   // nil-checked; run after every successful emission
 }
 
 // NewSwitcher creates a new Switcher instance
@@ -845,19 +849,72 @@ func (s *Switcher) performConversion(action Action) {
 		return
 	}
 
+	if err := s.emitConversionEvents(events, emitOptions{
+		delay:       time.Duration(s.config.Delay) * time.Millisecond,
+		switchDelay: time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond,
+	}); err != nil {
+		s.logError("%v", err)
+		return
+	}
+
+	time.Sleep(time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond)
+	s.inputReader.Flush()
+	s.converter.CompleteConversion(action)
+	s.logDebug("buffer length after conversion=%d", s.converter.BufferLen())
+}
+
+// emitOptions parameterise emitConversionEvents (gswitch-auto). The manual
+// path sets only the delays; the auto path always confirms the switch.
+type emitOptions struct {
+	reader      layoutStateReader // nil => s.layoutReader()
+	delay       time.Duration     // per emitted event (manual: config.Delay)
+	switchDelay time.Duration     // pause after a confirmed switch (manual: config.LayoutSwitchDelay)
+	// confirm forces the confirmed switch (triggerAndConfirmGNOMEWaylandLayoutSwitch with
+	// reader) regardless of s.verifyGNOMEWaylandLayoutSwitch / s.verifyGNOMEX11LayoutSwitch.
+	// Requires reader != nil. The auto path always sets it; the manual path never does.
+	confirm bool
+}
+
+var errConfirmReaderMissing = errors.New("switch confirmation requested without a reader")
+
+// emitSleep is the pause used between emitted events; tests replace it.
+var emitSleep = time.Sleep
+
+// emitConversionEvents releases shifts, performs the (confirmed) layout switch and replays
+// events. It returns an error before any text mutation when switch confirmation fails.
+// On success it calls s.onOwnSwitch when non-nil.
+//
+// events must start with the layout toggle produced by Converter.Convert or
+// Converter.ConvertRange (len(LSKeys)*2 events). Path selection: confirm without a
+// reader fails before anything is emitted; confirm or verifyGNOMEWaylandLayoutSwitch
+// use the trigger-and-poll confirmation (opts.reader, else s.layoutReader()); else
+// verifyGNOMEX11LayoutSwitch uses the XKB group confirmation; else the toggle is
+// replayed blindly with the rest of events.
+func (s *Switcher) emitConversionEvents(events []KeyEvent, opts emitOptions) error {
+	if opts.confirm && opts.reader == nil {
+		return errConfirmReaderMissing
+	}
+	if len(events) < len(s.converter.LSKeys)*2 {
+		return fmt.Errorf("conversion has %d events, fewer than the %d-event layout toggle",
+			len(events), len(s.converter.LSKeys)*2)
+	}
+
 	// Release shift keys before layout switch
 	for shiftKey := range Shifts {
 		if err := s.vKeyboard.KeyUp(shiftKey); err != nil {
 			s.logDebug("failed to release shift key %d: %v", shiftKey, err)
 		}
 	}
-	time.Sleep(time.Duration(s.config.Delay) * time.Millisecond)
+	emitSleep(opts.delay)
 	// The DE applies the layout switch asynchronously (GNOME routes it through
 	// the shell/ibus) and key events arriving mid-switch get dropped, so pause
 	// right after the switch keys before emitting backspaces and the replay.
 	switchEvents := len(s.converter.LSKeys) * 2
-	if s.verifyGNOMEWaylandLayoutSwitch {
-		reader := gnomeWaylandLayoutStateReader{env: s.sessionEnv}
+	if opts.confirm || s.verifyGNOMEWaylandLayoutSwitch {
+		reader := opts.reader
+		if reader == nil {
+			reader = s.layoutReader()
+		}
 		switchErr := triggerAndConfirmGNOMEWaylandLayoutSwitch(
 			reader,
 			s.converter.LSKeys,
@@ -866,21 +923,19 @@ func (s *Switcher) performConversion(action Action) {
 			},
 			gnomeWaylandLayoutSwitchAttempts,
 			gnomeWaylandLayoutGroupPollAttempts,
-			time.Duration(s.config.Delay)*time.Millisecond,
-			time.Sleep,
+			opts.delay,
+			emitSleep,
 		)
 		if switchErr != nil {
-			s.logError("GNOME Wayland layout switch confirmation: %v", switchErr)
-			return
+			return fmt.Errorf("GNOME Wayland layout switch confirmation: %w", switchErr)
 		}
 		events = events[switchEvents:]
 		switchEvents = 0
-		time.Sleep(time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond)
+		emitSleep(opts.switchDelay)
 	} else if s.verifyGNOMEX11LayoutSwitch {
 		reader, readerErr := newX11LayoutGroupReader()
 		if readerErr != nil {
-			s.logError("GNOME X11 layout switch confirmation: %v", readerErr)
-			return
+			return fmt.Errorf("GNOME X11 layout switch confirmation: %w", readerErr)
 		}
 		switchErr := triggerAndConfirmLayoutSwitch(
 			reader,
@@ -890,33 +945,43 @@ func (s *Switcher) performConversion(action Action) {
 			},
 			layoutSwitchAttempts,
 			layoutGroupPollAttempts,
-			time.Duration(s.config.Delay)*time.Millisecond,
-			time.Sleep,
+			opts.delay,
+			emitSleep,
 		)
 		reader.Close()
 		if switchErr != nil {
-			s.logError("GNOME X11 layout switch confirmation: %v", switchErr)
-			return
+			return fmt.Errorf("GNOME X11 layout switch confirmation: %w", switchErr)
 		}
 		events = events[switchEvents:]
 		switchEvents = 0
-		time.Sleep(time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond)
+		emitSleep(opts.switchDelay)
 	}
 	for i, ev := range events {
 		if err := s.vKeyboard.EmitKey(ev.Code, ev.Value); err != nil {
-			s.logError("failed to emit key: %v", err)
-			return
+			return fmt.Errorf("failed to emit key: %w", err)
 		}
-		time.Sleep(time.Duration(s.config.Delay) * time.Millisecond)
+		emitSleep(opts.delay)
 		if i == switchEvents-1 {
-			time.Sleep(time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond)
+			emitSleep(opts.switchDelay)
 		}
 	}
 
-	time.Sleep(time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond)
-	s.inputReader.Flush()
-	s.converter.CompleteConversion(action)
-	s.logDebug("buffer length after conversion=%d", s.converter.BufferLen())
+	if s.onOwnSwitch != nil {
+		s.onOwnSwitch()
+	}
+	return nil
+}
+
+// layoutReader returns the reader used to confirm a GNOME Wayland layout
+// switch: s.layoutReaderFn() when installed (gswitch-auto, only with a layout
+// tracker), else the upstream gsettings mru-sources reader.
+func (s *Switcher) layoutReader() layoutStateReader {
+	if s.layoutReaderFn != nil {
+		if reader := s.layoutReaderFn(); reader != nil {
+			return reader
+		}
+	}
+	return gnomeWaylandLayoutStateReader{env: s.sessionEnv}
 }
 
 func shouldVerifyGNOMEX11LayoutSwitch(result *DetectionResult, env *SessionEnv) bool {

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // gswitch-auto WP0 tests: golden capture of the manual conversion output
@@ -458,4 +459,411 @@ var emitTestKeyScriptGolden = map[string]string{
 	"keys/reverse-double-shift":          "42- 54- 125+ 125- 14+ 14- 14+ 14- 14+ 14- 14+ 14- 14+ 14- 30+ 30- 48+ 48- 57+ 57- 46+ 46- 32+ 32- | buf=5",
 	"keys/shift-only-tail":               "42- 54- 125+ 125- 42- | buf=4",
 	"keys/shifted-capital":               "42- 54- 56+ 42+ 42- 56- 14+ 14- 14+ 14- 14+ 14- 14+ 14- 14+ 14- 14+ 14- 42+ 34+ 34- 42- 35+ 35- 48+ 48- 32+ 32- 20+ 20- 49+ 49- | buf=8",
+}
+
+// --- emitConversionEvents (extracted from performConversion) ---
+
+// emitTestReader is a fake layoutStateReader: it returns states[i] on the
+// i-th call (the last state once exhausted), or err when set.
+type emitTestReader struct {
+	states []string
+	err    error
+	calls  int
+}
+
+func (r *emitTestReader) CurrentState() (string, error) {
+	r.calls++
+	if r.err != nil {
+		return "", r.err
+	}
+	if r.calls > len(r.states) {
+		return r.states[len(r.states)-1], nil
+	}
+	return r.states[r.calls-1], nil
+}
+
+// emitTestRecordSleeps replaces emitSleep with a recorder that does not sleep.
+func emitTestRecordSleeps(t *testing.T) *[]time.Duration {
+	t.Helper()
+	original := emitSleep
+	t.Cleanup(func() { emitSleep = original })
+	var sleeps []time.Duration
+	emitSleep = func(d time.Duration) { sleeps = append(sleeps, d) }
+	return &sleeps
+}
+
+// emitTestForbidGsettings fails the test if the upstream gsettings reader runs.
+func emitTestForbidGsettings(t *testing.T) {
+	t.Helper()
+	original := runGsettingsForGNOMEWayland
+	t.Cleanup(func() { runGsettingsForGNOMEWayland = original })
+	runGsettingsForGNOMEWayland = func(*SessionEnv, ...string) ([]byte, error) {
+		t.Error("the upstream gsettings reader must not be used on this path")
+		return nil, errors.New("forbidden")
+	}
+}
+
+// emitTestEvents returns Convert(ActionConvertWord) for "a sp b c" with toggle 125:
+// toggle, 2 backspaces, replay of "bc".
+func emitTestEvents(t *testing.T, s *Switcher) []KeyEvent {
+	t.Helper()
+	for _, ev := range emitTestSeq(t, "a sp b c") {
+		s.converter.Push(ev.Code, ev.Value)
+	}
+	events := s.converter.Convert(ActionConvertWord)
+	if got, want := emitTestFormat(events), "125+ 125- 14+ 14- 14+ 14- 48+ 48- 46+ 46-"; got != want {
+		t.Fatalf("fixture events = %s, want %s", got, want)
+	}
+	return events
+}
+
+const (
+	emitTestShiftReleases = "42- 54-"
+	emitTestFullReplay    = "42- 54- 125+ 125- 14+ 14- 14+ 14- 48+ 48- 46+ 46-"
+)
+
+func emitTestCountBackspaces(events []KeyEvent) int {
+	n := 0
+	for _, ev := range events {
+		if ev.Code == KEY_BACKSPACE && ev.Value == K_DOWN {
+			n++
+		}
+	}
+	return n
+}
+
+func TestEmitConversionEventsPathSelection(t *testing.T) {
+	type setup struct {
+		verifyWayland, verifyX11 bool
+		readerFn                 bool // install layoutReaderFn returning a changing fake reader
+		confirmReader            bool // opts.confirm with a changing fake reader
+	}
+	tests := []struct {
+		name      string
+		setup     setup
+		gsettings string // "changing", "forbidden"
+		wantErr   string
+		want      string
+		wantFn    int // layoutReaderFn calls
+		wantOwn   int // onOwnSwitch calls
+	}{
+		{name: "manual blind", gsettings: "forbidden", want: emitTestFullReplay, wantOwn: 1},
+		{name: "manual wayland upstream reader", setup: setup{verifyWayland: true}, gsettings: "changing", want: emitTestFullReplay, wantOwn: 1},
+		{name: "manual wayland installed reader", setup: setup{verifyWayland: true, readerFn: true}, gsettings: "forbidden", want: emitTestFullReplay, wantFn: 1, wantOwn: 1},
+		{name: "manual x11 unavailable", setup: setup{verifyX11: true}, gsettings: "forbidden", wantErr: "GNOME X11 layout switch confirmation", want: emitTestShiftReleases},
+		{name: "manual wayland wins over x11", setup: setup{verifyWayland: true, verifyX11: true}, gsettings: "changing", want: emitTestFullReplay, wantOwn: 1},
+		{name: "manual blind ignores installed reader", setup: setup{readerFn: true}, gsettings: "forbidden", want: emitTestFullReplay, wantOwn: 1},
+		{name: "confirm without verify flags", setup: setup{confirmReader: true, readerFn: true}, gsettings: "forbidden", want: emitTestFullReplay, wantOwn: 1},
+		{name: "confirm beats x11", setup: setup{confirmReader: true, verifyX11: true}, gsettings: "forbidden", want: emitTestFullReplay, wantOwn: 1},
+		{name: "confirm with wayland flag uses given reader", setup: setup{confirmReader: true, verifyWayland: true, readerFn: true}, gsettings: "forbidden", want: emitTestFullReplay, wantOwn: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			emitTestRecordSleeps(t)
+			s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{125}})
+			s.verifyGNOMEWaylandLayoutSwitch = tt.setup.verifyWayland
+			s.verifyGNOMEX11LayoutSwitch = tt.setup.verifyX11
+			if tt.setup.verifyX11 {
+				t.Setenv("DISPLAY", "")
+			}
+			switch tt.gsettings {
+			case "changing":
+				emitTestStubGsettings(t, false)
+			case "forbidden":
+				emitTestForbidGsettings(t)
+			}
+			fnCalls := 0
+			if tt.setup.readerFn {
+				s.layoutReaderFn = func() layoutStateReader {
+					fnCalls++
+					return &emitTestReader{states: []string{"0@1", "1@2"}}
+				}
+			}
+			own := 0
+			s.onOwnSwitch = func() { own++ }
+			opts := emitOptions{}
+			if tt.setup.confirmReader {
+				opts.confirm = true
+				opts.reader = &emitTestReader{states: []string{"0@1", "1@2"}}
+			}
+
+			err := s.emitConversionEvents(emitTestEvents(t, s), opts)
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("emitConversionEvents() error = %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Fatalf("emitConversionEvents() error = %v, want %q", err, tt.wantErr)
+			}
+			if got := emitTestFormat(emitTestCanonicalEmitted(emitTestCaptured(t, output))); got != tt.want {
+				t.Errorf("emitted %s, want %s", got, tt.want)
+			}
+			if fnCalls != tt.wantFn {
+				t.Errorf("layoutReaderFn calls = %d, want %d", fnCalls, tt.wantFn)
+			}
+			if own != tt.wantOwn {
+				t.Errorf("onOwnSwitch calls = %d, want %d", own, tt.wantOwn)
+			}
+		})
+	}
+}
+
+func TestEmitConversionEventsConfirmFailsBeforeTextMutation(t *testing.T) {
+	sleeps := emitTestRecordSleeps(t)
+	emitTestForbidGsettings(t)
+	s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{56, 42}})
+	own := 0
+	s.onOwnSwitch = func() { own++ }
+	reader := &emitTestReader{states: []string{"0@1"}} // never changes
+	for _, ev := range emitTestSeq(t, "g h b") {
+		s.converter.Push(ev.Code, ev.Value)
+	}
+
+	err := s.emitConversionEvents(s.converter.Convert(ActionConvertWord), emitOptions{reader: reader, confirm: true})
+	if err == nil || !strings.Contains(err.Error(), "did not change") {
+		t.Fatalf("emitConversionEvents() error = %v, want an unconfirmed switch", err)
+	}
+	emitted := emitTestCaptured(t, output)
+	if n := emitTestCountBackspaces(emitted); n != 0 {
+		t.Fatalf("emitted %d backspaces after a failed confirmation: %s", n, emitTestFormat(emitted))
+	}
+	// Two attempts of the toggle, nothing else.
+	want := "42- 54- 56+ 42+ 42- 56- 56+ 42+ 42- 56-"
+	if got := emitTestFormat(emitTestCanonicalEmitted(emitted)); got != want {
+		t.Errorf("emitted %s, want %s", got, want)
+	}
+	if wantCalls := 1 + gnomeWaylandLayoutSwitchAttempts*gnomeWaylandLayoutGroupPollAttempts; reader.calls != wantCalls {
+		t.Errorf("reader calls = %d, want %d", reader.calls, wantCalls)
+	}
+	if own != 0 {
+		t.Errorf("onOwnSwitch calls = %d after a failure, want 0", own)
+	}
+	if len(*sleeps) == 0 {
+		t.Error("confirmation polled without the injected pause")
+	}
+}
+
+func TestEmitConversionEventsConfirmReaderError(t *testing.T) {
+	emitTestRecordSleeps(t)
+	s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{125}})
+	readErr := errors.New("tracker not confirmed")
+	err := s.emitConversionEvents(emitTestEvents(t, s), emitOptions{reader: &emitTestReader{err: readErr}, confirm: true})
+	if !errors.Is(err, readErr) {
+		t.Fatalf("emitConversionEvents() error = %v, want %v", err, readErr)
+	}
+	if got := emitTestFormat(emitTestCanonicalEmitted(emitTestCaptured(t, output))); got != emitTestShiftReleases {
+		t.Errorf("emitted %s, want only %s", got, emitTestShiftReleases)
+	}
+}
+
+func TestEmitConversionEventsConfirmWithoutReader(t *testing.T) {
+	emitTestRecordSleeps(t)
+	emitTestForbidGsettings(t)
+	for _, verify := range []bool{false, true} {
+		t.Run(fmt.Sprintf("verifyWayland=%t", verify), func(t *testing.T) {
+			s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{125}})
+			s.verifyGNOMEWaylandLayoutSwitch = verify
+			s.layoutReaderFn = func() layoutStateReader {
+				t.Error("confirm without a reader must not fall back to layoutReaderFn")
+				return nil
+			}
+			own := 0
+			s.onOwnSwitch = func() { own++ }
+			err := s.emitConversionEvents(emitTestEvents(t, s), emitOptions{confirm: true})
+			if !errors.Is(err, errConfirmReaderMissing) {
+				t.Fatalf("emitConversionEvents() error = %v, want errConfirmReaderMissing", err)
+			}
+			if got := emitTestCaptured(t, output); len(got) != 0 {
+				t.Fatalf("emitted %s, want nothing", emitTestFormat(got))
+			}
+			if own != 0 {
+				t.Errorf("onOwnSwitch calls = %d, want 0", own)
+			}
+		})
+	}
+}
+
+func TestEmitConversionEventsNilOnOwnSwitch(t *testing.T) {
+	emitTestRecordSleeps(t)
+	s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{125}})
+	if s.onOwnSwitch != nil || s.layoutReaderFn != nil {
+		t.Fatal("fork hooks must default to nil")
+	}
+	for _, opts := range []emitOptions{{}, {confirm: true, reader: &emitTestReader{states: []string{"a", "b"}}}} {
+		if err := s.emitConversionEvents(emitTestEvents(t, s), opts); err != nil {
+			t.Fatalf("emitConversionEvents(%+v) error = %v", opts, err)
+		}
+		s.converter.ClearBuffer()
+	}
+	if n := emitTestCountBackspaces(emitTestCaptured(t, output)); n != 4 {
+		t.Fatalf("backspaces = %d, want 4", n)
+	}
+}
+
+func TestEmitConversionEventsEmitErrorSkipsOwnSwitch(t *testing.T) {
+	emitTestRecordSleeps(t)
+	path := t.TempDir() + "/readonly"
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { readOnly.Close() })
+	s := &Switcher{
+		config:      &Config{LayoutSwitchKey: []uint16{125}},
+		converter:   NewConverter(),
+		vKeyboard:   &VirtualKeyboard{fd: readOnly},
+		inputReader: &InputReader{},
+	}
+	s.converter.LSKeys = []uint16{125}
+	own := 0
+	s.onOwnSwitch = func() { own++ }
+	err = s.emitConversionEvents(emitTestEvents(t, s), emitOptions{})
+	if err == nil || !strings.Contains(err.Error(), "failed to emit key") {
+		t.Fatalf("emitConversionEvents() error = %v, want an emit failure", err)
+	}
+	if own != 0 {
+		t.Errorf("onOwnSwitch calls = %d, want 0", own)
+	}
+}
+
+func TestEmitConversionEventsRejectsEventsWithoutToggle(t *testing.T) {
+	emitTestRecordSleeps(t)
+	s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{56, 42}})
+	for _, events := range [][]KeyEvent{nil, {{Code: 56, Value: K_DOWN}}} {
+		if err := s.emitConversionEvents(events, emitOptions{confirm: true, reader: &emitTestReader{states: []string{"a", "b"}}}); err == nil {
+			t.Errorf("emitConversionEvents(%s) succeeded, want an error", emitTestFormat(events))
+		}
+	}
+	if got := emitTestCaptured(t, output); len(got) != 0 {
+		t.Fatalf("emitted %s, want nothing", emitTestFormat(got))
+	}
+}
+
+func TestEmitConversionEventsDelays(t *testing.T) {
+	const (
+		d  = 7 * time.Millisecond
+		sd = 90 * time.Millisecond
+		pd = gnomeWaylandLayoutGroupPollDelay
+	)
+	tests := []struct {
+		name string
+		opts func() emitOptions
+		want []time.Duration
+	}{
+		{
+			// Upstream blind path: pause after the shift releases, after every
+			// event, and the switch delay after the last toggle event.
+			name: "blind",
+			opts: func() emitOptions { return emitOptions{delay: d, switchDelay: sd} },
+			want: []time.Duration{d, d, d, sd, d, d, d, d, d, d, d, d},
+		},
+		{
+			// Confirmed path: pause after the shift releases, after each toggle
+			// key, one poll, the switch delay, then after every remaining event.
+			name: "confirm",
+			opts: func() emitOptions {
+				return emitOptions{delay: d, switchDelay: sd, confirm: true, reader: &emitTestReader{states: []string{"a", "b"}}}
+			},
+			want: []time.Duration{d, d, d, pd, sd, d, d, d, d, d, d, d, d},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sleeps := emitTestRecordSleeps(t)
+			s, _ := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{125}})
+			if err := s.emitConversionEvents(emitTestEvents(t, s), tt.opts()); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(*sleeps, tt.want) {
+				t.Errorf("sleeps = %v, want %v", *sleeps, tt.want)
+			}
+		})
+	}
+}
+
+func TestPerformConversionPassesConfiguredDelays(t *testing.T) {
+	sleeps := emitTestRecordSleeps(t)
+	s, output := emitTestSwitcher(t, emitTestPathBlind, &Config{LayoutSwitchKey: []uint16{125}, Delay: 3, LayoutSwitchDelay: 1})
+	emitTestEvents(t, s)
+	s.performConversion(ActionConvertWord)
+	d, sd := 3*time.Millisecond, 1*time.Millisecond
+	want := []time.Duration{d, d, d, sd, d, d, d, d, d, d, d, d}
+	if !slices.Equal(*sleeps, want) {
+		t.Errorf("sleeps = %v, want %v", *sleeps, want)
+	}
+	if got := emitTestFormat(emitTestCanonicalEmitted(emitTestCaptured(t, output))); got != emitTestFullReplay {
+		t.Errorf("emitted %s, want %s", got, emitTestFullReplay)
+	}
+	if !s.converter.CanUndo(ActionConvertWord) {
+		t.Error("successful manual conversion must arm the upstream undo")
+	}
+}
+
+func TestPerformConversionLogsConfirmationFailure(t *testing.T) {
+	s, output := emitTestSwitcher(t, emitTestPathWaylandFailed, &Config{LayoutSwitchKey: []uint16{125}})
+	s.debug = true
+	emitTestEvents(t, s)
+	logged := captureStdout(t, func() { s.performConversion(ActionConvertWord) })
+	want := "ERROR: GNOME Wayland layout switch confirmation: read GNOME input source: gsettings unavailable\n"
+	if !strings.Contains(logged, want) {
+		t.Errorf("log = %q, want it to contain %q", logged, want)
+	}
+	if s.converter.CanUndo(ActionConvertWord) {
+		t.Error("failed manual conversion must not arm the upstream undo")
+	}
+	if n := emitTestCountBackspaces(emitTestCaptured(t, output)); n != 0 {
+		t.Errorf("backspaces = %d after a failed confirmation, want 0", n)
+	}
+}
+
+// TestEmitConversionEventsMatchesPerformConversionGolden feeds Convert output
+// straight into emitConversionEvents with the options performConversion uses
+// and compares the emitted events with the values performConversion produced
+// before the extraction.
+func TestEmitConversionEventsMatchesPerformConversionGolden(t *testing.T) {
+	emitTestRecordSleeps(t)
+	paths := []emitTestPath{emitTestPathBlind, emitTestPathWaylandOK, emitTestPathWaylandFailed, emitTestPathX11Unavailable}
+	for _, fx := range emitTestPerformFixtures {
+		for _, path := range paths {
+			for _, action := range []Action{ActionConvertWord, ActionConvertAll} {
+				key := fmt.Sprintf("%s/%s/reverse=false/%s", fx.name, path, emitTestActionName(action))
+				golden, ok := emitTestPerformGolden[key]
+				if !ok {
+					t.Fatalf("%s: no golden value", key)
+				}
+				want, _, _ := strings.Cut(golden, " | ")
+				cfg := &Config{LayoutSwitchKey: fx.lsKeys, ConvertKey: fx.convKey}
+				s, output := emitTestSwitcher(t, path, cfg)
+				for _, ev := range emitTestSeq(t, fx.script) {
+					s.converter.Push(ev.Code, ev.Value)
+				}
+				if fx.process {
+					s.converter.Process()
+				}
+				_ = s.emitConversionEvents(s.converter.Convert(action), emitOptions{})
+				if got := emitTestFormat(emitTestCanonicalEmitted(emitTestCaptured(t, output))); got != want {
+					t.Errorf("%s:\n got  %s\n want %s", key, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestLayoutReaderSelection(t *testing.T) {
+	env := &SessionEnv{User: "test"}
+	s := &Switcher{sessionEnv: env}
+	if got, want := s.layoutReader(), (gnomeWaylandLayoutStateReader{env: env}); got != want {
+		t.Fatalf("layoutReader() without layoutReaderFn = %#v, want %#v", got, want)
+	}
+	fake := &emitTestReader{states: []string{"x"}}
+	s.layoutReaderFn = func() layoutStateReader { return fake }
+	if got := s.layoutReader(); got != fake {
+		t.Fatalf("layoutReader() = %#v, want the installed reader", got)
+	}
+	s.layoutReaderFn = func() layoutStateReader { return nil }
+	if got, want := s.layoutReader(), (gnomeWaylandLayoutStateReader{env: env}); got != want {
+		t.Fatalf("layoutReader() with a nil-returning layoutReaderFn = %#v, want %#v", got, want)
+	}
 }
