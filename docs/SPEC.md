@@ -517,7 +517,12 @@ code not in `Letters ∪ Shifts ∪ BufKillers`; `MarkDiscarded()` (input was dr
 SPACE/ENTER/KPENTER K_DOWN set `pendingBoundary`; the next text K_DOWN resets (so the engine
 reads the taint of the finished word after Observe); Backspace K_DOWN while `pendingBoundary`
 clears it (the boundary was erased, the word resumes); a BufKiller K_DOWN except Ctrl (mirrors
-`converter.go:105-108`, i.e. every `Push`-side `ClearBuffer`) resets immediately. A
+`converter.go:105-108`, i.e. every `Push`-side `ClearBuffer`) resets immediately. `Push` also
+clears the buffer on a non-Ctrl BufKiller **K_UP**: outside a word that release resets too (and
+invalidates the engine's word-start snapshot), but inside a word (a text key buffered since the
+last reset) it taints the word `killer-release`, because the letters typed between the killer's
+press and release stay on screen (Tab/arrow rollover `Tab↓ c Tab↑ rfpfk␣` shows `crfpfk `
+while the buffer holds `rfpfk␣`; a fix would leave `cказал `). A
 `MarkDiscarded` taint is cleared only by a boundary observed after it: e.g. the user starts a
 word during a selection conversion, `gh` reaches the app but is drained, `bdtn` is buffered ⇒
 Space finds `tainted:discarded` and does not turn the screen into `ghидет `. CapsLock before a

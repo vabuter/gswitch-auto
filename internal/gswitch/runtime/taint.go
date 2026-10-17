@@ -17,6 +17,10 @@ const (
 	taintReasonNumLock    = "numlock"     // NumLock inside a word
 	taintReasonUnknownKey = "unknown-key" // any other key outside Letters ∪ Shifts ∪ BufKillers
 	taintReasonDiscarded  = "discarded"   // keystrokes already delivered were dropped (C25)
+	// taintReasonKillerUp: a non-Ctrl BufKiller was released inside a word.
+	// The converter clears its buffer on that K_UP too, so the letters typed
+	// since the killer's press are on screen but no longer buffered.
+	taintReasonKillerUp = "killer-release"
 )
 
 const (
@@ -35,7 +39,11 @@ const (
 // press resets the state, so the taint of the finished word stays readable
 // right after the boundary was observed; a Backspace press while a boundary is
 // pending erases it (the word resumes); a BufKiller press other than Ctrl
-// resets immediately, mirroring the converter's ClearBuffer.
+// resets immediately, mirroring the converter's ClearBuffer. The converter
+// clears the buffer on that killer's release as well: a release outside a
+// word resets too, but a release inside a word taints it, because the
+// letters typed since the press stay on screen (Tab or arrow rollover:
+// "Tab↓ c Tab↑ rfpfk" shows "crfpfk" while the buffer holds "rfpfk").
 type WordTaint struct {
 	tainted         bool
 	reason          string
@@ -58,6 +66,11 @@ func (t *WordTaint) Observe(code uint16, value int32, ctrlHeld bool) {
 			t.taint(taintReasonRepeat)
 		}
 		return
+	case K_UP:
+		if taintClearsBuffer(code) {
+			t.observeKillerRelease()
+		}
+		return
 	case K_DOWN:
 	default:
 		return
@@ -69,7 +82,7 @@ func (t *WordTaint) Observe(code uint16, value int32, ctrlHeld bool) {
 	case Shifts[code]:
 		// Shift state is replayed from the buffer.
 	case BufKillers[code]:
-		if code != KEY_LEFTCTRL && code != KEY_RIGHTCTRL {
+		if taintClearsBuffer(code) {
 			t.Reset()
 		}
 	default:
@@ -101,6 +114,24 @@ func (t *WordTaint) observeLetter(code uint16, ctrlHeld bool) {
 		t.inWord = true
 		t.taintIfMeta()
 	}
+}
+
+// observeKillerRelease handles the K_UP of a non-Ctrl BufKiller, on which
+// Converter.Push clears the buffer exactly as on its K_DOWN.
+func (t *WordTaint) observeKillerRelease() {
+	if t.inWord {
+		// Text typed between the killer's press and release is on screen
+		// but gone from the buffer: the rest of the word is unfixable.
+		t.taint(taintReasonKillerUp)
+		return
+	}
+	t.Reset()
+}
+
+// taintClearsBuffer reports a key whose K_DOWN and K_UP make Converter.Push
+// clear the buffer (converter.go: a BufKiller other than Ctrl).
+func taintClearsBuffer(code uint16) bool {
+	return BufKillers[code] && code != KEY_LEFTCTRL && code != KEY_RIGHTCTRL
 }
 
 // observeOtherKey handles a K_DOWN outside Letters ∪ Shifts ∪ BufKillers.

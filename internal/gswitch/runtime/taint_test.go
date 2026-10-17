@@ -172,9 +172,26 @@ func TestWordTaintBoundaries(t *testing.T) {
 		})
 	}
 
-	// BufKiller releases and repeats do not reset (K_DOWN only, the same
-	// boundary set as the auto engine's word-start snapshot).
+	// BufKiller repeats do not reset; a release inside a word keeps the
+	// earlier reason (first reason wins).
 	taintTestNew(t).feed("TAB+ g h* TAB* TAB-").want(true, "repeat")
+
+	// The converter clears the buffer on a non-Ctrl BufKiller release too:
+	// letters typed since the press are on screen but no longer buffered,
+	// so the word is tainted (Tab or arrow rollover).
+	for _, killer := range []string{"TAB", "LA", "RA", "UP", "HOME"} {
+		t.Run(killer+" released inside a word", func(t *testing.T) {
+			taintTestNew(t).feed(killer+"+ g "+killer+"- h b d t n").want(true, "killer-release").
+				feed("SP").want(true, "killer-release").feed("h").clean()
+		})
+		t.Run(killer+" released outside a word", func(t *testing.T) {
+			// A release with no text since the reset just resets again.
+			taintTestNew(t).feed(killer + "+ LS+ LS- " + killer + "- g h b d t n SP").clean()
+			taintTestNew(t).feed("g h SP " + killer + "+ " + killer + "- b d t n").clean()
+		})
+	}
+	// Ctrl presses and releases never clear the buffer.
+	taintTestNew(t).feed("g LC+ LC- h RC+ RC- b").clean()
 
 	// After a reset the next word starts outside a word: CapsLock is fine.
 	taintTestNew(t).feed("g h* TAB CAPS g h b").clean()

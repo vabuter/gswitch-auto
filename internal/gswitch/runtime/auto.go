@@ -191,8 +191,14 @@ func (e *AutoEngine) Observe(code uint16, value int32, ctrlHeld bool) {
 		}
 	}
 	e.taint.Observe(code, value, ctrlHeld)
-	if value == K_DOWN {
+	switch {
+	case value == K_DOWN:
 		e.trackWordStart(code, ctrlHeld)
+	case value == K_UP && taintClearsBuffer(code):
+		// Converter.Push clears the buffer on this release too; WordTaint
+		// taints a word that was in progress.
+		e.snapValid = false
+		e.pendingBoundary = false
 	}
 }
 
@@ -200,7 +206,8 @@ func (e *AutoEngine) Observe(code uint16, value int32, ctrlHeld bool) {
 // of WordTaint: SPACE/ENTER/KPENTER set a pending boundary, a Backspace that
 // erases it resumes the previous word (and keeps its snapshot), the next text
 // key starts a new word, and a BufKiller other than Ctrl (which empties the
-// converter buffer) forces a new snapshot. Ctrl+key is neither a boundary nor
+// converter buffer on its press and on its release, see Observe) forces a new
+// snapshot. Ctrl+key is neither a boundary nor
 // a word start: the switcher never buffers it.
 func (e *AutoEngine) trackWordStart(code uint16, ctrlHeld bool) {
 	switch {
@@ -221,7 +228,7 @@ func (e *AutoEngine) trackWordStart(code uint16, ctrlHeld bool) {
 			}
 			e.pendingBoundary = false
 		}
-	case BufKillers[code] && code != KEY_LEFTCTRL && code != KEY_RIGHTCTRL:
+	case taintClearsBuffer(code):
 		e.snapValid = false
 		e.pendingBoundary = false
 	}

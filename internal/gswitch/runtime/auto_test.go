@@ -587,6 +587,9 @@ func TestAutoEngineSkipReasons(t *testing.T) {
 		{name: "too-short", script: "a SP", want: "too-short"},
 		{name: "too-long", setup: func(env *autoTestEnv) { env.settings.MaxLetters = 4 }, script: "a b c d e SP", want: "too-long"},
 		{name: "tainted", script: "g g:r h b SP", want: "tainted:repeat"},
+		// Tab rollover: the release clears the buffer, "g" stays on screen.
+		{name: "killer released inside the word", script: "TAB:d g TAB:u h b d t n SP", want: "tainted:killer-release"},
+		{name: "killer released inside a short word", script: "RALT:d d RALT:u j n SP", want: "tainted:killer-release"},
 		{name: "focus-changed", script: "g h", mid: func(env *autoTestEnv) { env.focus.Seq++ }, tail: "b d SP", want: "focus-changed"},
 		{name: "focus policy", setup: func(env *autoTestEnv) {
 			env.focus.Allowed, env.focus.Reason = false, "password-field"
@@ -1120,6 +1123,19 @@ func TestAutoEngineWordStartSnapshot(t *testing.T) {
 			}
 		}
 	})
+	t.Run("bufkiller release re-takes the snapshot", func(t *testing.T) {
+		env := autoTestNew(t)
+		env.feed("g h SP TAB:d")
+		env.focus.Seq++
+		env.layout.Generation++
+		env.feed("TAB:u")
+		env.focus.Seq++
+		env.layout.Generation++
+		env.feed("g h b d t n SP")
+		if !env.armed() {
+			t.Fatalf("first word after the BufKiller release skipped: %q", env.eng.Stats().LastReason)
+		}
+	})
 	t.Run("ctrl does not re-take the snapshot", func(t *testing.T) {
 		env := autoTestNew(t)
 		env.feed("g h LCTRL")
@@ -1199,6 +1215,18 @@ func TestAutoEnginePunctuationRealXKB(t *testing.T) {
 				t.Fatalf("replay = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestAutoEngineKillerRolloverRealDetector: Tab rollover leaves "c" on screen
+// while the release clears the buffer, so "rfpfk" (a Fix for the real
+// detector) must not be retyped as "cказал ".
+func TestAutoEngineKillerRolloverRealDetector(t *testing.T) {
+	for _, script := range []string{"TAB:d c TAB:u r f p f k SP", "TAB:d d TAB:u j n SP"} {
+		env := autoTestNewReal(t)
+		env.feed(script).wait(2 * time.Second)
+		env.wantEmits(0)
+		env.wantReason(autoPrefixTainted + taintReasonKillerUp)
 	}
 }
 
