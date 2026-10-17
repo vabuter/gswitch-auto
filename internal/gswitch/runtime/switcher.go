@@ -90,6 +90,7 @@ type Switcher struct {
 	// gswitch-auto (fork)
 	layoutReaderFn func() layoutStateReader // nil: upstream gsettings reader (layoutReader)
 	onOwnSwitch    func()                   // nil-checked; run after every successful emission
+	forkState                               // fork.go; the zero value is the upstream behaviour
 }
 
 // NewSwitcher creates a new Switcher instance
@@ -222,6 +223,8 @@ func NewSwitcher(config *Config, debug bool) (*Switcher, error) {
 		s.log("Selection conversion will be disabled")
 	}
 
+	s.initFork()
+
 	cleanupLogger = false
 	cleanupSignalHandler = false
 	return s, nil
@@ -283,6 +286,7 @@ func (s *Switcher) initLayoutConverter() error {
 	if err != nil {
 		return err
 	}
+	s.layoutSpecs = layouts
 
 	s.layoutConverter = NewLayoutConverter(layout1, layout2)
 	s.log("Layout converter initialized: %s <-> %s", formatLayout(layouts[0]), formatLayout(layouts[1]))
@@ -449,6 +453,7 @@ func (s *Switcher) Run() error {
 	s.log("gswitch started successfully (auto-detect mode)")
 
 	s.eventChan = make(chan *InputEvent, 256)
+	s.startFork()
 
 	s.wg.Add(3)
 	go s.processDeviceEvents()
@@ -462,13 +467,17 @@ func (s *Switcher) Run() error {
 		case event := <-s.eventChan:
 			s.handleIncomingEvent(event)
 			s.flushOverflowEvents()
-		case <-time.After(EventLoopTimeoutMs * time.Millisecond):
+		case fn := <-s.controlChan:
+			fn()
+		case <-time.After(s.loopWait()):
 			s.flushOverflowEvents()
 		}
+		s.autoTick()
 	}
 
 	// Stop signal handling before cleanup
 	s.stopSignalHandler()
+	s.stopFork()
 
 	s.inputReader.Close()
 	s.logDebug("Waiting for goroutines to finish...")
@@ -666,6 +675,9 @@ func (s *Switcher) processKeyEvent(event *InputEvent) {
 	s.logDebug("input event received")
 	defer s.finishSelectionModifierEvent(event)
 	s.trackSelectionModifiers(event)
+	if s.forkPreProcess(event) {
+		return
+	}
 
 	if s.processCustomConversionKey(event) {
 		return
@@ -719,6 +731,8 @@ func (s *Switcher) processKeyEvent(event *InputEvent) {
 			} else {
 				s.logDebug("Buffer has no text, skipping conversion")
 			}
+		} else if s.auto != nil && event.Code == KEY_SPACE && event.Value == K_DOWN {
+			s.auto.OnSpace(s.converter)
 		}
 	}
 }
@@ -825,6 +839,9 @@ func (s *Switcher) deferSelectionUntilModifiersReleased(transform selectionTrans
 }
 
 func (s *Switcher) performConversion(action Action) {
+	if s.forkBeforeConversion(action) {
+		return
+	}
 	if s.config.ReverseMode {
 		switch action {
 		case ActionConvertWord:
@@ -859,6 +876,7 @@ func (s *Switcher) performConversion(action Action) {
 
 	time.Sleep(time.Duration(s.config.LayoutSwitchDelay) * time.Millisecond)
 	s.inputReader.Flush()
+	s.afterInputDiscarded()
 	s.converter.CompleteConversion(action)
 	s.logDebug("buffer length after conversion=%d", s.converter.BufferLen())
 }
@@ -1047,6 +1065,7 @@ func (s *Switcher) convertSelection(transform selectionTransform) {
 	s.inConversion.Store(true)
 	defer func() {
 		s.drainEventChan()
+		s.afterInputDiscarded()
 		s.ctrlPressed.Store(false)
 		s.leftShiftPressed.Store(false)
 		s.rightShiftPressed.Store(false)
@@ -1226,6 +1245,7 @@ func (s *Switcher) Close() {
 		s.cancel()
 	}
 	s.stopSignalHandler()
+	s.stopFork()
 	if s.logger != nil {
 		s.logger.Close()
 	}
