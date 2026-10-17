@@ -345,3 +345,133 @@ func TestParseGnomeInputSources(t *testing.T) {
 		})
 	}
 }
+
+// renderTestSymbols is a fixture XKB symbols file for the LayoutInfo.Unmapped tests.
+const renderTestSymbols = `// Fixture layout with dead keys.
+
+default partial alphanumeric_keys
+xkb_symbols "basic" {
+
+    include "renderfix(common)"
+    name[Group1]= "Fixture";
+
+    key <AC11>	{[ dead_acute,	dead_diaeresis	]};
+    key <AE06>	{[	 6,	asciicircum	]};
+    key <AD01>	{[	 q,	Q,	dead_grave	]};
+    key <AD02>	{[ NoSymbol,	W		]};
+    key <AB02>	{[	 x,	VoidSymbol	]};
+    key <AB03>	{[ Multi_key,	C		]};
+};
+
+partial alphanumeric_keys
+xkb_symbols "late" {
+
+    key <AE06>	{[	 6,	dead_circumflex	]};
+    key <AB01>	{[ dead_tilde,	Z		]};
+    include "renderfix(common)"
+};
+
+hidden partial alphanumeric_keys
+xkb_symbols "common" {
+
+    key <AE06>	{[	 6,	dead_circumflex	]};
+    key <AC11>	{[ apostrophe,	quotedbl	]};
+    key <AB01>	{[	 z,	Z		]};
+};
+`
+
+// renderTestLoadFixture loads a variant of renderTestSymbols through LoadLayout.
+func renderTestLoadFixture(t *testing.T, variant string) *LayoutInfo {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "renderfix"), []byte(renderTestSymbols), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := xkbSymbolsPath
+	xkbSymbolsPath = dir
+	t.Cleanup(func() { xkbSymbolsPath = old })
+	layout, err := LoadLayout("renderfix", variant)
+	if err != nil {
+		t.Fatalf("LoadLayout(renderfix, %q) error = %v", variant, err)
+	}
+	return layout
+}
+
+func TestLoadLayoutUnmapped(t *testing.T) {
+	layout := renderTestLoadFixture(t, "")
+
+	// KeyMap keeps upstream behaviour: runeless keysyms are dropped, and a key
+	// with no rune at all keeps the included definition.
+	wantKeyMap := map[string][]rune{
+		"AC11": {'\'', '"'},
+		"AE06": {'6', '^'},
+		"AD01": {'q', 'Q'},
+		"AD02": {'W'},
+		"AB01": {'z', 'Z'},
+		"AB02": {'x'},
+		"AB03": {'C'},
+	}
+	if !reflect.DeepEqual(layout.KeyMap, wantKeyMap) {
+		t.Fatalf("KeyMap = %q, want %q", layout.KeyMap, wantKeyMap)
+	}
+	wantUnmapped := map[string]bool{"AC11": true, "AD01": true, "AD02": true, "AB02": true, "AB03": true}
+	if !reflect.DeepEqual(layout.Unmapped, wantUnmapped) {
+		t.Fatalf("Unmapped = %v, want %v (AE06 redefined after the include must be mapped)",
+			layout.Unmapped, wantUnmapped)
+	}
+}
+
+func TestLoadLayoutUnmappedIncludeOverrides(t *testing.T) {
+	layout := renderTestLoadFixture(t, "late")
+	if !layout.Unmapped["AE06"] {
+		t.Error("AE06: dead key in both the section and the include must stay unmapped")
+	}
+	if layout.Unmapped["AB01"] {
+		t.Error("AB01: a mapped definition from a later include must clear the unmapped flag")
+	}
+	if got := string(layout.KeyMap["AB01"]); got != "zZ" {
+		t.Errorf("AB01 KeyMap = %q, want zZ", got)
+	}
+	if layout.Unmapped["AC11"] {
+		t.Error("AC11: mapped in the include, must not be unmapped")
+	}
+}
+
+// TestLoadLayoutUnmappedBlocksRender checks that the compacted KeyMap of an
+// unmapped key ([NoSymbol, W] → "W") is never rendered as level 1.
+func TestLoadLayoutUnmappedBlocksRender(t *testing.T) {
+	fixture := renderTestLoadFixture(t, "")
+	other := &LayoutInfo{KeyMap: map[string][]rune{
+		"AD02": {'w', 'W'}, "AE06": {'6', '^'}, "AB01": {'z', 'Z'},
+	}}
+	for _, tc := range []struct {
+		code uint16
+		ok   bool
+	}{
+		{17, false}, // AD02 [NoSymbol, W]
+		{7, true},   // AE06
+	} {
+		buf := []KeyEvent{{Code: tc.code, Value: K_DOWN}}
+		_, err := renderWord(buf, 0, 1, fixture, other, false)
+		if (err == nil) != tc.ok {
+			t.Errorf("renderWord(code %d) error = %v, want ok=%v", tc.code, err, tc.ok)
+		}
+	}
+}
+
+// TestLoadLayoutRealHasNoUnmappedLetters checks the installed us and ru
+// layouts leave the alphanumeric block mapped (NewLayoutConverter input is
+// unchanged by the Unmapped field).
+func TestLoadLayoutRealHasNoUnmappedLetters(t *testing.T) {
+	for _, name := range []string{"us", "ru"} {
+		layout, err := LoadLayout(name, "")
+		if err != nil {
+			t.Skipf("XKB symbols not available: %v", err)
+		}
+		for key := range layout.Unmapped {
+			if strings.HasPrefix(key, "A") || key == "TLDE" || key == "BKSL" {
+				t.Errorf("%s: %s unexpectedly unmapped", name, key)
+			}
+		}
+	}
+}
