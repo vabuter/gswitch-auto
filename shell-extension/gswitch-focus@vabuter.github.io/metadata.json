@@ -1,0 +1,10 @@
+{
+    "uuid": "gswitch-focus@vabuter.github.io",
+    "name": "gswitch Focus Reporter",
+    "description": "Reports the focused application's desktop id, WM_CLASS and text-field purpose over the session D-Bus for the gswitch-auto daemon. No window titles or text are exposed.",
+    "shell-version": [
+        "50"
+    ],
+    "version": 1,
+    "url": "https://github.com/vabuter/gswitch-auto"
+}
