@@ -62,11 +62,22 @@ func (t *Tray) UpdateAutoPersistError(message string) {
 	})
 }
 
-// applyAutoState records st and redraws the menu item, the badge and the
-// tooltip suffix. It runs on the tray event loop.
+// applyAutoState records st and redraws what it changes: the menu item when
+// a field it shows changed, the icon and tooltip when the badge or the
+// tooltip suffix changed. The daemon republishes its status every second
+// while the user types (Stats), and every backend call makes the panel
+// re-fetch the menu or the icon, so a status that only differs in fields the
+// tray does not show redraws nothing. It runs on the tray event loop.
 func (t *Tray) applyAutoState(st ipc.ClientStatus) {
+	prev := t.autoStatus
 	t.autoStatus = st
-	t.renderAutoMenuItem()
+	if prev.Connected != st.Connected || prev.AutoAvailable != st.AutoAvailable ||
+		prev.AutoEnabled != st.AutoEnabled || prev.ToggleChord != st.ToggleChord {
+		t.renderAutoMenuItem()
+	}
+	if prev.Connected == st.Connected && autoStatusBadge(prev) == autoStatusBadge(st) {
+		return // icon and tooltip suffix unchanged
+	}
 	if t.detectionInfo.Status != TrayStatusOK {
 		return // warning and error icons keep priority
 	}
@@ -85,7 +96,11 @@ func (t *Tray) autoAvailable() bool {
 
 // autoBadgeOn reports whether the icon shows the automatic correction badge.
 func (t *Tray) autoBadgeOn() bool {
-	return t.autoAvailable() && t.autoStatus.AutoEnabled
+	return autoStatusBadge(t.autoStatus)
+}
+
+func autoStatusBadge(st ipc.ClientStatus) bool {
+	return st.Connected && st.AutoAvailable && st.AutoEnabled
 }
 
 // autoTooltipSuffix is appended to the layout tooltip while a daemon is

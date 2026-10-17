@@ -230,3 +230,69 @@ func TestAutoMenuClickTogglesAuto(t *testing.T) {
 		t.Fatal("toggle did not publish the new state")
 	}
 }
+
+// gaTestCountingBackend counts icon and tooltip updates.
+type gaTestCountingBackend struct {
+	*gaTestCheckboxBackend
+	iconCalls, tooltipCalls int
+}
+
+func (b *gaTestCountingBackend) SetIcon(icon []byte) {
+	b.iconCalls++
+	b.gaTestCheckboxBackend.SetIcon(icon)
+}
+
+func (b *gaTestCountingBackend) SetTooltip(tooltip string) {
+	b.tooltipCalls++
+	b.gaTestCheckboxBackend.SetTooltip(tooltip)
+}
+
+// TestApplyAutoStateSkipsInvisibleChanges: the daemon republishes its status
+// every second while the user types (Stats, CorrectionCount); a status that
+// only differs in fields the tray does not show must not touch the icon,
+// the tooltip or the menu item (each call makes the panel re-fetch them).
+func TestApplyAutoStateSkipsInvisibleChanges(t *testing.T) {
+	gaTestUseLanguage(t, "en")
+	backend := &gaTestCountingBackend{gaTestCheckboxBackend: &gaTestCheckboxBackend{recordingTrayBackend: &recordingTrayBackend{}}}
+	tray := &Tray{backend: backend, iconMode: TrayIconModeAppWithFlag,
+		detectionInfo: DetectionInfo{Status: TrayStatusOK, KeyNames: "Alt+Shift", Source: "gnome"}}
+	tray.addAutoMenuItem()
+	item := backend.checkboxItems[0]
+	tray.applyLayout(LayoutInfo{ShortCode: "US", LongName: "English (US)"})
+
+	st := gaTestStatus(false, true)
+	tray.applyAutoState(st)
+	icons, tooltips, checks := backend.iconCalls, backend.tooltipCalls, item.checkCalls
+
+	for i := range 5 {
+		st.Stats = map[string]uint64{"skipped": uint64(i + 1)}
+		st.Count = uint32(i)
+		st.Last = ipc.Correction{Direction: "us>ru"}
+		tray.applyAutoState(st)
+	}
+	if backend.iconCalls != icons || backend.tooltipCalls != tooltips || item.checkCalls != checks {
+		t.Fatalf("invisible changes redrew: icon %d->%d tooltip %d->%d check %d->%d",
+			icons, backend.iconCalls, tooltips, backend.tooltipCalls, checks, item.checkCalls)
+	}
+
+	// A new toggle chord changes only the menu item.
+	st.ToggleChord = "29+97"
+	tray.applyAutoState(st)
+	if item.checkCalls != checks+1 || !strings.Contains(item.tooltip, "LCtrl+RCtrl") {
+		t.Fatalf("chord change: check calls %d, tooltip %q", item.checkCalls-checks, item.tooltip)
+	}
+	if backend.iconCalls != icons || backend.tooltipCalls != tooltips {
+		t.Fatal("chord change redrew the icon or the tooltip")
+	}
+
+	// Enabling changes the badge: icon and tooltip are redrawn.
+	st.AutoEnabled = true
+	tray.applyAutoState(st)
+	if backend.iconCalls != icons+1 || !bytes.Equal(backend.icon, GetNormalIconAuto(TrayIconModeAppWithFlag, "US", true)) {
+		t.Fatalf("enable: icon calls %d, badge shown %v", backend.iconCalls-icons,
+			bytes.Equal(backend.icon, GetNormalIconAuto(TrayIconModeAppWithFlag, "US", true)))
+	}
+	if !item.checked || !strings.HasSuffix(backend.tooltip, "\n"+tr(strGATooltipOn)) {
+		t.Fatalf("enable: checked=%v tooltip=%q", item.checked, backend.tooltip)
+	}
+}
