@@ -3,7 +3,9 @@ package focus
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -80,5 +82,71 @@ func TestExtensionScriptUsesClientNames(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Errorf("extension.js does not contain %s", want)
 		}
+	}
+}
+
+// focusTestJSFunction extracts a top-level function declaration from script.
+func focusTestJSFunction(t *testing.T, script, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?ms)^function ` + name + `\(.*?^}$`).FindString(script)
+	if m == "" {
+		t.Fatalf("extension.js has no top-level function %s", name)
+	}
+	return m
+}
+
+// TestExtensionReportsSecretHintsAsPassword: a field that marks itself
+// secret only with content hints (Qt 6 password line edits on Wayland report
+// purpose NORMAL with HIDDEN_TEXT|SENSITIVE_DATA, which gnome-shell maps to
+// IBus HIDDEN_TEXT|PRIVATE) must be reported as "password", so that
+// auto-skip-password covers it. The extension's pure helpers run under node
+// with the IBus 1.5 and Clutter flag values.
+func TestExtensionReportsSecretHintsAsPassword(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(focusTestExtensionRoot, ExtensionUUID, "extension.js"))
+	if err != nil {
+		t.Fatalf("read extension.js: %v", err)
+	}
+	script := string(raw)
+	for _, want := range []string{
+		`'set-content-type', (_manager, purpose, hints) => this._onIBusContentType(purpose, hints)`,
+		`'notify::content-hints'`,
+		`hintMask(IBus.InputHints, IBUS_SECRET_HINTS)`,
+		`hintMask(Clutter.InputContentHintFlags, CLUTTER_SECRET_HINTS)`,
+		`const IBUS_SECRET_HINTS = ['HIDDEN_TEXT', 'PRIVATE'];`,
+		`const CLUTTER_SECRET_HINTS = ['HIDDEN_TEXT', 'SENSITIVE_DATA'];`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("extension.js does not contain %s", want)
+		}
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	program := focusTestJSFunction(t, script, "hintMask") + "\n" +
+		focusTestJSFunction(t, script, "securePurpose") + `
+const ibus = hintMask({HIDDEN_TEXT: 4096, PRIVATE: 2048, SPELLCHECK: 1}, ['HIDDEN_TEXT', 'PRIVATE', 'MISSING']);
+const clutter = hintMask({HIDDEN_TEXT: 64, SENSITIVE_DATA: 128}, ['HIDDEN_TEXT', 'SENSITIVE_DATA']);
+const cases = [
+    [securePurpose('normal', 4096, ibus), 'password'],
+    [securePurpose('normal', 2048 | 1, ibus), 'password'],
+    [securePurpose('unknown', 4096, ibus), 'password'],
+    [securePurpose('normal', 1, ibus), 'normal'],
+    [securePurpose('normal', 0, ibus), 'normal'],
+    [securePurpose('pin', 4096, ibus), 'pin'],
+    [securePurpose('password', 0, ibus), 'password'],
+    [securePurpose('normal', 128, clutter), 'password'],
+    [securePurpose('email', 64, clutter), 'password'],
+    [securePurpose('normal', 0, 0), 'normal'],
+];
+const bad = cases.filter(([got, want]) => got !== want);
+if (ibus !== 6144 || clutter !== 192 || bad.length > 0)
+    throw new Error('masks ' + ibus + ' ' + clutter + '; mismatches ' + JSON.stringify(bad));
+console.log('ok');
+`
+	out, err := exec.Command(node, "-e", program).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("node: %v\n%s", err, out)
 	}
 }

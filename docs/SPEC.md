@@ -770,7 +770,12 @@ apps: `Shell.AppSystem.get_default().get_running()`. Purpose: primary `getIBusMa
 sets purpose `none`; a `set-content-type` is accepted only after a `focus-in` (pairing rule);
 fallback `Main.inputMethod` `notify::content-purpose` (`ui/keyboard.js:1982-1986`) when IBus is
 absent. Map enums by comparing `IBus.InputPurpose.*` / `Clutter.InputContentPurpose.*` constants
-(no hard-coded numbers). In `disable()`, **before** unexporting, emit
+(no hard-coded numbers). Content hints are honoured too: `set-content-type`'s `hints` with
+`IBus.InputHints.HIDDEN_TEXT | PRIVATE` (fallback: `Main.inputMethod.contentHints` with
+`Clutter.InputContentHintFlags.HIDDEN_TEXT | SENSITIVE_DATA`, also on `notify::content-hints`)
+report `password` unless the purpose is already password/pin — Qt 6 on Wayland sends password
+line edits as purpose NORMAL with these hints (gnome-shell maps Clutter SENSITIVE_DATA to IBus
+PRIVATE, `misc/inputMethod.js`); flag values are looked up at run time as well. In `disable()`, **before** unexporting, emit
 `Disabling(Main.sessionMode.isLocked ? 'locked' : 'disabled')`, then disconnect everything,
 `unown_name`, `unexport`. All callbacks guard on `this._dbusImpl`. No titles, text or pids.
 

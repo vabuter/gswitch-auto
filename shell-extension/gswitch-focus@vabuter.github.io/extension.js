@@ -82,6 +82,42 @@ const CLUTTER_PURPOSE_NAMES = [
     ['TERMINAL', 'terminal'],
 ];
 
+// Content hints that mark a field as secret whatever its purpose. Toolkits
+// such as Qt 6 on Wayland (text-input-v3) report password line edits as
+// purpose NORMAL with these hints; gnome-shell maps the Clutter
+// SENSITIVE_DATA hint to IBus PRIVATE (misc/inputMethod.js). Such a field is
+// reported as 'password'. Values are looked up at run time like the purposes.
+const IBUS_SECRET_HINTS = ['HIDDEN_TEXT', 'PRIVATE'];
+const CLUTTER_SECRET_HINTS = ['HIDDEN_TEXT', 'SENSITIVE_DATA'];
+
+/**
+ * @param {object} flagsObject - GI flags such as IBus.InputHints
+ * @param {Array<string>} names - flag member names
+ * @returns {number} - the bitwise OR of the members the typelib has
+ */
+function hintMask(flagsObject, names) {
+    let mask = 0;
+    for (const name of names) {
+        const value = flagsObject?.[name];
+        if (typeof value === 'number')
+            mask |= value;
+    }
+    return mask;
+}
+
+/**
+ * @param {string} name - the bus name of a purpose
+ * @param {number} hints - the field's content hints
+ * @param {number} secretMask - hintMask of the secret hints
+ * @returns {string} - 'password' for a secret field that does not already
+ *   report password or pin, else name
+ */
+function securePurpose(name, hints, secretMask) {
+    if ((hints & secretMask) !== 0 && name !== 'password' && name !== 'pin')
+        return 'password';
+    return name;
+}
+
 /**
  * @param {object} enumObject - a GI enum such as IBus.InputPurpose
  * @param {Array<Array<string>>} names - [member, bus name] pairs
@@ -101,6 +137,8 @@ class FocusReporter {
     constructor() {
         this._ibusPurposes = purposeTable(IBus.InputPurpose, IBUS_PURPOSE_NAMES);
         this._clutterPurposes = purposeTable(Clutter.InputContentPurpose, CLUTTER_PURPOSE_NAMES);
+        this._ibusSecretHints = hintMask(IBus.InputHints, IBUS_SECRET_HINTS);
+        this._clutterSecretHints = hintMask(Clutter.InputContentHintFlags, CLUTTER_SECRET_HINTS);
 
         // An IBus 'focus-in' was seen since the last 'focus-out'.
         this._imFocused = false;
@@ -125,10 +163,11 @@ class FocusReporter {
         getIBusManager().connectObject(
             'focus-in', () => this._onIBusFocusIn(),
             'focus-out', () => this._onIBusFocusOut(),
-            'set-content-type', (_manager, purpose, _hints) => this._onIBusContentType(purpose),
+            'set-content-type', (_manager, purpose, hints) => this._onIBusContentType(purpose, hints),
             this);
         Main.inputMethod?.connectObject(
             'notify::content-purpose', () => this._onClutterPurpose(),
+            'notify::content-hints', () => this._onClutterPurpose(),
             this);
     }
 
@@ -234,10 +273,15 @@ class FocusReporter {
     // Input purpose
 
     _initialPurpose() {
-        const im = Main.inputMethod;
-        if (im?.currentFocus)
-            return this._clutterPurposes.get(im.contentPurpose) ?? 'unknown';
+        if (Main.inputMethod?.currentFocus)
+            return this._clutterPurpose();
         return 'unknown';
+    }
+
+    _clutterPurpose() {
+        const im = Main.inputMethod;
+        return securePurpose(this._clutterPurposes.get(im.contentPurpose) ?? 'unknown',
+            im.contentHints ?? 0, this._clutterSecretHints);
     }
 
     _onIBusFocusIn() {
@@ -251,7 +295,7 @@ class FocusReporter {
         this._setPurpose('none');
     }
 
-    _onIBusContentType(purpose) {
+    _onIBusContentType(purpose, hints) {
         this._ibusSeen = true;
         // Pairing rule: a content type counts only while an input context is
         // focused. ibusManager does not re-emit 'focus-in' for gnome-shell's
@@ -260,14 +304,15 @@ class FocusReporter {
         // stands in for that focus-in.
         if (!this._imFocused && !Main.inputMethod?.currentFocus)
             return;
-        this._setPurpose(this._ibusPurposes.get(purpose) ?? 'unknown');
+        this._setPurpose(securePurpose(this._ibusPurposes.get(purpose) ?? 'unknown',
+            hints ?? 0, this._ibusSecretHints));
     }
 
     _onClutterPurpose() {
         // Fallback when IBus is absent: used only until IBus reports anything.
         if (this._ibusSeen)
             return;
-        this._setPurpose(this._clutterPurposes.get(Main.inputMethod.contentPurpose) ?? 'unknown');
+        this._setPurpose(this._clutterPurpose());
     }
 
     _setPurpose(purpose) {

@@ -46,6 +46,12 @@ read the focused application id, the same scope as GNOME's portals.
   focused `Main.inputMethod` stands in for that `focus-in`. Without IBus,
   `Main.inputMethod` `notify::content-purpose` is the fallback. Enum values
   are looked up in the IBus/Clutter typelibs at run time.
+- Secret fields: a field whose content hints include `HIDDEN_TEXT` or
+  `PRIVATE` (IBus; Clutter `HIDDEN_TEXT` or `SENSITIVE_DATA`) is reported as
+  `password` unless it already reports `password` or `pin`. Qt 6 on Wayland
+  reports password line edits as a normal field with these hints. Fields that
+  request privacy this way (for example in some private-browsing windows) are
+  therefore treated as password fields as well.
 - Lock: the extension uses the default `user` session mode, so the Shell
   disables it when the screen locks. It sends `Disabling("locked")` first;
   the daemon treats the session as locked until the extension is back, and
