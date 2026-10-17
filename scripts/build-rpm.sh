@@ -289,6 +289,14 @@ expect "README.md is %doc" \
     grep -Eq '^/usr/share/doc/gswitch-auto/README\.md [a-z]*d[a-z]*$' <<<"$flags"
 expect_line "/usr/bin/gswitch is 0755" "$modes" "/usr/bin/gswitch -rwxr-xr-x"
 expect_line "/usr/bin/gswitch-tray is 0755" "$modes" "/usr/bin/gswitch-tray -rwxr-xr-x"
+# gnome-shell runs as the user: the extension must be world-readable
+# whatever the builder's umask was.
+expect_line "extension directory is 0755" "$modes" \
+    "/usr/share/gnome-shell/extensions/$extension_uuid drwxr-xr-x"
+for f in metadata.json extension.js; do
+    expect_line "extension $f is 0644" "$modes" \
+        "/usr/share/gnome-shell/extensions/$extension_uuid/$f -rw-r--r--"
+done
 
 # The packaged user unit must be byte-identical to upstream's (SPEC D2).
 tmp=$(mktemp -d)

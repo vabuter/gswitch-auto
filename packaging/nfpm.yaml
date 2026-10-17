@@ -21,8 +21,8 @@ version: ${GSWITCH_VERSION}
 # Keep "+auto.N" verbatim: the semver schema would split it into metadata.
 version_schema: none
 release: ${GSWITCH_RELEASE}
-# Applied to modes taken from the checkout (shell-extension tree): never
-# ship group/world-writable files, whatever the builder's umask was.
+# Safety net for any mode taken from the checkout. umask only removes bits,
+# so every packaged file and directory also sets an explicit mode.
 umask: 0022
 
 section: utils
@@ -201,11 +201,23 @@ contents:
 
   # GNOME Shell extension reporting the focused application (SPEC §3.5).
   # UUID == directory name == focus.ExtensionUUID (scripts/check-extension.sh).
-  # No file_info here: for a tree nfpm would apply the mode to directories too;
-  # files and directories keep their checkout modes (0644/0755).
-  - src: shell-extension/gswitch-focus@vabuter.github.io
-    dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io
-    type: tree
+  # Listed file by file with explicit modes: a tree would take its modes from
+  # the checkout (a builder umask of 077 ships 0700/0600, which gnome-shell
+  # running as the user cannot read, and umask never adds bits) and would
+  # ship stray files such as editor swap files. scripts/check-extension.sh
+  # checks that every extension file is listed here.
+  - dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io
+    type: dir
+    file_info:
+      mode: 0755
+  - src: shell-extension/gswitch-focus@vabuter.github.io/metadata.json
+    dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/metadata.json
+    file_info:
+      mode: 0644
+  - src: shell-extension/gswitch-focus@vabuter.github.io/extension.js
+    dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js
+    file_info:
+      mode: 0644
 
   # Licences: the fork, the embedded punto-rs models (hunspell-ru derivative,
   # see THIRD-PARTY-NOTICES.md) and the vendored clipboard package.

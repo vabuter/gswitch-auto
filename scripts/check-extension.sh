@@ -5,6 +5,8 @@
 #   - metadata.json parses (python3 -m json.tool)
 #   - metadata uuid == directory name == focus.ExtensionUUID in
 #     internal/gswitch/focus/state.go == the nfpm destination directory
+#   - nfpm.yaml lists the directory (mode 0755) and every extension file
+#     (mode 0644) explicitly, never the directory as a tree
 #   - shell-version contains "50"
 #   - every .js file passes `node --check` (checked as an ES module)
 #
@@ -131,12 +133,42 @@ fi
 if [[ ! -f $nfpm_yaml ]]; then
     fail "$nfpm_yaml not found"
 else
-    name_re=${dir_name//./\\.}
-    if grep -Eq "^[[:space:]]*-?[[:space:]]*src:[[:space:]]*$ext_root/$name_re/?[[:space:]]*$" "$nfpm_yaml" &&
-        grep -Eq "^[[:space:]]*dst:[[:space:]]*/usr/share/gnome-shell/extensions/$name_re/?[[:space:]]*$" "$nfpm_yaml"; then
-        ok "$nfpm_yaml installs $ext_root/$dir_name to /usr/share/gnome-shell/extensions/$dir_name"
+    # One "src|dst|type|mode" line per contents entry ("-" when absent).
+    entries=$(python3 - "$nfpm_yaml" <<'EOF'
+import re
+import sys
+
+entries = []
+entry = None
+with open(sys.argv[1], encoding="utf-8") as f:
+    for line in f:
+        m = re.match(r"^\s*(-\s+)?(src|dst|type|mode):\s*(\S+)\s*$", line)
+        if re.match(r"^\s*-\s", line):
+            entry = {}
+            entries.append(entry)
+        if m is not None and entry is not None:
+            entry[m.group(2)] = m.group(3)
+for e in entries:
+    if "dst" in e:
+        print("|".join(e.get(k, "-") for k in ("src", "dst", "type", "mode")))
+EOF
+    ) || entries=""
+    dst_dir=/usr/share/gnome-shell/extensions/$dir_name
+    if grep -Fxq -- "-|$dst_dir|dir|0755" <<<"$entries"; then
+        ok "$nfpm_yaml creates $dst_dir with mode 0755"
     else
-        fail "$nfpm_yaml does not map $ext_root/$dir_name to /usr/share/gnome-shell/extensions/$dir_name"
+        fail "$nfpm_yaml does not list $dst_dir as a dir entry with mode 0755"
+    fi
+    while IFS= read -r -d '' file; do
+        rel=${file#"$ext_dir"/}
+        if grep -Fxq -- "$ext_root/$dir_name/$rel|$dst_dir/$rel|-|0644" <<<"$entries"; then
+            ok "$nfpm_yaml installs $rel with mode 0644"
+        else
+            fail "$nfpm_yaml does not install $ext_root/$dir_name/$rel to $dst_dir/$rel with mode 0644"
+        fi
+    done < <(find "$ext_dir" -type f ! -name '.*' -print0 | sort -z)
+    if grep -Fq -- "|$dst_dir|tree|" <<<"$entries"; then
+        fail "$nfpm_yaml packages $dst_dir as a tree (checkout modes, stray files)"
     fi
 fi
 

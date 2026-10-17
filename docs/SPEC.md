@@ -1753,7 +1753,9 @@ Both are read-only and need neither root nor `/dev/input`.
   `builds/gswitch-tray` → `/usr/bin/gswitch-tray` (0755) explicitly** (C21) + every rpm-applicable
   entry of `.goreleaser.yml:108-211` (unit, udev rule, `default.conf` as `config|noreplace`,
   autostart/app desktop files, polkit policy, icons) + `shell-extension/gswitch-focus@vabuter.github.io`
-  → `/usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io` (`type: tree`) +
+  → `/usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io`, listed file by file
+  (`type: dir` 0755 plus `metadata.json`/`extension.js` 0644; not `type: tree`, whose modes come
+  from the checkout and survive a restrictive builder umask, and which ships stray files) +
   licences (`type: license`) `LICENSE`, `third_party/punto-rs/LICENSE` → `punto-rs-LICENSE`,
   `third_party/punto-rs/hunspell-ru-LICENSE`, `third_party/punto-rs/NOTICE.md` →
   `THIRD-PARTY-NOTICES.md`, clipboard licence under `/usr/share/licenses/gswitch-auto/` +
@@ -1771,7 +1773,8 @@ Both are read-only and need neither root nor `/dev/input`.
   `~/go/bin/nfpm`, or `go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0`; sha256 checksums;
   `rpm -qp` assertions); `scripts/version.sh [--verify]`; `scripts/check-extension.sh` (one dir
   under `shell-extension/`, metadata parses, uuid == dir name == `focus.ExtensionUUID` grep in
-  `internal/gswitch/focus/state.go` == nfpm dst, `shell-version` contains "50"); `Makefile`
+  `internal/gswitch/focus/state.go` == nfpm dst, every extension file listed with mode 0644 and the
+  directory with 0755, `shell-version` contains "50"); `Makefile`
   (targets build test vet lint rpm install ext-check version clean; `NFPM ?= $(HOME)/go/bin/nfpm`).
 - **CI**: `ci.yml` adds `rpm` apt package, RPM build + metadata assertions, extension check
   (`python3 -m json.tool`, `node --check`), `shellcheck scripts/*.sh`, and job `install-test` in
