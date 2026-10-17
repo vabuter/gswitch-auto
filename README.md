@@ -181,7 +181,8 @@ inactive and automatic mode keeps working elsewhere; set
 - Corrected and learned words appear on the session bus (`Corrected`,
   `LastCorrection`, `CorrectionUndone`, `PendingLearnedWords`) only while
   `ipc-expose-words=true`; with `false`, words learned on undo stay in daemon
-  memory and are not saved. The daemon never logs words unless run with
+  memory and are not saved, and words captured meanwhile stay hidden after
+  the setting returns to `true`. The daemon never logs words unless run with
   `--debug` and `GSWITCH_AUTO_LOG_WORDS=1`.
 - Because the daemon cannot write to your home directory, a toggle made with
   the chord or over D-Bus and words learned on undo are saved by the tray.

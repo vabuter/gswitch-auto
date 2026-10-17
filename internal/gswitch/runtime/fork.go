@@ -80,8 +80,12 @@ type forkState struct {
 	autoUnsaved     atomic.Bool  // runtime value changed by chord/dbus, not yet seen on disk
 	lastAnnounced   [2]time.Time // [false],[true]: last chord/dbus SetAutoEnabled of that value (autoMu)
 
+	// pendingMu serialises every change of the detector's user exceptions
+	// (learnWord, applyUserConfig) with the two learned-word lists, so that a
+	// reload never drops a word learned concurrently.
 	pendingMu      sync.Mutex
 	pendingLearned []string // learned folded words not yet in exceptions-words.txt (cap forkPendingCap)
+	memoryLearned  []string // words learned while ipc-expose-words=false: detector only, never published (cap forkPendingCap)
 
 	tracker    *layoutstate.Tracker // nil: layout-source=none, non-GNOME session, root mode, no layout pair
 	lsKeysDown map[uint16]bool      // layout-switch keys physically down (Run goroutine only)

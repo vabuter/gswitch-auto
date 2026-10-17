@@ -974,7 +974,7 @@ without a daemon restart.
 | `auto-skip-locked` | bool | `true` | lock state | yes |
 | `hotkey-toggle-auto` | chord or `none` | `42+54` (LShift+RShift) | ChordDetector | yes |
 | `hotkey-convert-selection` | chord or `none` | `42+97+100` (LShift+RCtrl+RAlt) | ChordDetector | yes |
-| `ipc-expose-words` | bool | `true` | words in `Corrected`/`LastCorrection`/`CorrectionUndone`/`PendingLearnedWords` (applied by WP11 before calling the IPC service; `false` ⇒ learned words stay in daemon memory only) | yes |
+| `ipc-expose-words` | bool | `true` | words in `Corrected`/`LastCorrection`/`CorrectionUndone`/`PendingLearnedWords` (applied by WP11 before calling the IPC service; `false` ⇒ learned words stay in daemon memory only; words corrected or learned while `false` are blanked/kept memory-only at capture time, so they stay hidden after a switch back to `true`) | yes |
 | `focus-source` | `auto`\|`off` | `auto` | focus client | restart |
 | `layout-source` | `auto`\|`ibus`\|`none` | `auto` | tracker sources | restart |
 | `layout-hint-timeout-ms` | int 100..2000 | `400` | tracker Pending window | restart |

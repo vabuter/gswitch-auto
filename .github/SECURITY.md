@@ -57,7 +57,8 @@ to stay anonymous).
   (`Corrected`, `LastCorrection`, `CorrectionUndone`, `PendingLearnedWords`)
   only while `ipc-expose-words=true` in `~/.config/gswitch/auto.conf`; set it
   to `false` to blank them (words learned on undo then stay in daemon memory
-  only and are not saved).
+  only and are not saved). Words corrected or learned while it is `false`
+  stay hidden after it is set back to `true`.
 - **GNOME Shell extension.** The bundled extension publishes only the focused
   application's desktop id, WM_CLASS and text-field purpose; no window titles,
   text or process ids. Password-field detection is best effort and is not a

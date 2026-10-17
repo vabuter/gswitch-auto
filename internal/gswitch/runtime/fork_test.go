@@ -601,18 +601,57 @@ func TestLearnedWordsPendingUntilFileHasThem(t *testing.T) {
 		t.Fatalf("undo notification with ipc-expose-words=false = %+v, want blank word", last)
 	}
 
+	// Back to ipc-expose-words=true: "ytn", learned while words were hidden,
+	// stays in daemon memory only (never published, so never saved).
 	s.applyUserConfig(forkTestConfig(userconfig.DefaultSettings(), []string{"Ghbdtn"}, nil))
-	if got := s.statusSnapshot().PendingLearnedWords; !slices.Equal(got, []string{"ytn"}) {
-		t.Fatalf("PendingLearnedWords after the file got ghbdtn = %q, want [ytn]", got)
+	if got := s.statusSnapshot().PendingLearnedWords; len(got) != 0 {
+		t.Fatalf("PendingLearnedWords after the file got ghbdtn = %q, want empty", got)
 	}
 	for _, w := range []string{"ghbdtn", "ytn"} {
 		if !s.detector.IsException(w, lang.En) {
 			t.Fatalf("%q is not a detector exception after reload", w)
 		}
 	}
+	s.applyUserConfig(forkTestConfig(userconfig.DefaultSettings(), []string{"Ghbdtn"}, nil))
+	if !s.detector.IsException("ytn", lang.En) {
+		t.Fatal("memory-only learned word lost from the detector on a second reload")
+	}
 	s.learnWord("ghbdtn") // already in the file
-	if got := s.statusSnapshot().PendingLearnedWords; !slices.Equal(got, []string{"ytn"}) {
-		t.Fatalf("a word already in the file became pending: %q", got)
+	s.learnWord("ntrcn")
+	if got := s.statusSnapshot().PendingLearnedWords; !slices.Equal(got, []string{"ntrcn"}) {
+		t.Fatalf("PendingLearnedWords = %q, want [ntrcn] (file word and memory-only word excluded)", got)
+	}
+}
+
+// TestLearnWordConcurrentReloadKeepsWord: a reload that runs at the same time
+// as learnWord (watcher or D-Bus Reload goroutine against the Run goroutine)
+// never drops the newly learned word from the detector.
+func TestLearnWordConcurrentReloadKeepsWord(t *testing.T) {
+	s, _ := forkTestSwitcher(t, &Config{})
+	c := forkTestConfig(userconfig.DefaultSettings(), nil, nil)
+	s.userCfg.Store(c)
+	s.initDetector(c)
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	for round := range 3000 {
+		word := "q" + string(letters[round%26]) + string(letters[round/26%26]) + string(letters[round/676%26])
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			s.applyUserConfig(forkTestConfig(userconfig.DefaultSettings(), nil, nil))
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			s.learnWord(word)
+		}()
+		close(start)
+		wg.Wait()
+		if !s.detector.IsException(word, lang.En) {
+			t.Fatalf("round %d: %q learned during a reload is not a detector exception", round, word)
+		}
 	}
 }
 
@@ -910,6 +949,12 @@ func TestStatusSnapshotBlanksWordsWhenNotExposed(t *testing.T) {
 	}
 	if got := s.statusSnapshot().Last; got != blank {
 		t.Fatalf("LastCorrection with ipc-expose-words=false = %+v, want %+v", got, blank)
+	}
+
+	// Words captured while hidden stay hidden after ipc-expose-words=true.
+	s.userCfg.Store(forkTestConfig(userconfig.DefaultSettings(), nil, nil))
+	if got := s.statusSnapshot().Last; got != blank {
+		t.Fatalf("LastCorrection after re-enabling ipc-expose-words = %+v, want %+v", got, blank)
 	}
 }
 

@@ -187,18 +187,19 @@ func (s *Switcher) layoutName(index int) string {
 	return ""
 }
 
-// autoOnFix records a fired fix and announces it (words blanked when
-// ipc-expose-words=false).
+// autoOnFix records a fired fix and announces it. With
+// ipc-expose-words=false the words are blanked before they are stored, so a
+// later switch back to true cannot publish them.
 func (s *Switcher) autoOnFix(ev FixEvent) {
-	c := ipc.Correction{
+	c := forkExposeCorrection(ipc.Correction{
 		From:      ev.Shown,
 		To:        ev.Alt,
 		Direction: s.layoutName(ev.From) + ">" + s.layoutName(ev.To),
 		Time:      ev.At,
-	}
+	}, s.userSettings().ExposeWords)
 	s.lastCorrection.Store(&c)
 	if ref := s.ipcSvc.Load(); ref != nil {
-		ref.svc.NotifyCorrected(forkExposeCorrection(c, s.userSettings().ExposeWords))
+		ref.svc.NotifyCorrected(c)
 	}
 }
 
@@ -229,27 +230,43 @@ func forkExposeCorrection(c ipc.Correction, expose bool) ipc.Correction {
 
 // learnWord adds a folded word to the detector's user exceptions at once and
 // keeps it in pendingLearned until exceptions-words.txt contains it, so that
-// the tray can persist it (PendingLearnedWords; with ipc-expose-words=false
-// the word stays in daemon memory only).
+// the tray can persist it (PendingLearnedWords). A word learned while
+// ipc-expose-words=false goes to memoryLearned instead: it survives reloads
+// in the detector but is never published or saved, even after the setting
+// returns to true. pendingMu is held across the detector update, so a
+// concurrent applyUserConfig either sees the word in a list or runs first.
 func (s *Switcher) learnWord(folded string) {
 	if folded == "" {
 		return
 	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
 	if s.detector != nil {
 		s.detector.AddUserException(folded)
 	}
-	if c := s.userCfg.Load(); c != nil && c.Words.Contains(folded) {
+	c := s.userCfg.Load()
+	if c != nil && c.Words.Contains(folded) {
 		return
 	}
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	if slices.Contains(s.pendingLearned, folded) {
+	if c != nil && !c.Settings.ExposeWords {
+		s.memoryLearned = forkAppendLearned(s.memoryLearned, folded)
 		return
 	}
-	s.pendingLearned = append(s.pendingLearned, folded)
-	if n := len(s.pendingLearned); n > forkPendingCap {
-		s.pendingLearned = slices.Clone(s.pendingLearned[n-forkPendingCap:])
+	s.memoryLearned = slices.DeleteFunc(s.memoryLearned, func(w string) bool { return w == folded })
+	s.pendingLearned = forkAppendLearned(s.pendingLearned, folded)
+}
+
+// forkAppendLearned appends w to list unless present, keeping at most
+// forkPendingCap words (oldest dropped).
+func forkAppendLearned(list []string, w string) []string {
+	if slices.Contains(list, w) {
+		return list
 	}
+	list = append(list, w)
+	if n := len(list); n > forkPendingCap {
+		list = slices.Clone(list[n-forkPendingCap:])
+	}
+	return list
 }
 
 // AutoEnabled reports the runtime enable state.

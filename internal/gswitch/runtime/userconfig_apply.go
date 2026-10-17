@@ -168,10 +168,7 @@ func (s *Switcher) applyUserConfig(c *userconfig.Config) {
 			s.log("Warning: detector options: %v", err)
 		}
 	}
-	pending := s.syncPendingLearned(c)
-	if s.detector != nil {
-		s.detector.SetUserExceptions(append(c.Words.Entries(), pending...))
-	}
+	s.syncLearnedExceptions(c)
 	s.applyChords(prev, c.Settings)
 	s.focusPolicy.Store(forkFocusPolicy(c))
 	changed, enabled := s.applyAutoEnabledRuleLocked(c.Settings.AutoEnabled)
@@ -206,19 +203,20 @@ func (s *Switcher) applyAutoEnabledRuleLocked(f bool) (changed, enabled bool) {
 	}
 }
 
-// syncPendingLearned drops every learned word that the file now contains and
-// returns a copy of the remaining ones.
-func (s *Switcher) syncPendingLearned(c *userconfig.Config) []string {
+// syncLearnedExceptions drops every learned word that the file now contains
+// and rebuilds the detector's user exceptions from the file words plus the
+// remaining learned ones. pendingMu is held across both steps so that a word
+// learned concurrently (learnWord) is never lost from the detector.
+func (s *Switcher) syncLearnedExceptions(c *userconfig.Config) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
-	kept := make([]string, 0, len(s.pendingLearned))
-	for _, w := range s.pendingLearned {
-		if !c.Words.Contains(w) {
-			kept = append(kept, w)
-		}
+	inFile := func(w string) bool { return c.Words.Contains(w) }
+	s.pendingLearned = slices.DeleteFunc(s.pendingLearned, inFile)
+	s.memoryLearned = slices.DeleteFunc(s.memoryLearned, inFile)
+	if s.detector != nil {
+		words := append(c.Words.Entries(), s.pendingLearned...)
+		s.detector.SetUserExceptions(append(words, s.memoryLearned...))
 	}
-	s.pendingLearned = kept
-	return slices.Clone(kept)
 }
 
 // logNewWarnings logs loader and restart-only warnings that the previous
