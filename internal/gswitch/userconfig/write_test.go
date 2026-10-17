@@ -173,6 +173,51 @@ func TestSetAutoEnabled(t *testing.T) {
 	}
 }
 
+// TestWriteThroughSymlink: auto.conf and the word list managed as symlinks
+// into a dotfiles directory stay symlinks; the files they point to are
+// updated.
+func TestWriteThroughSymlink(t *testing.T) {
+	dir := ucTestDir(t)
+	dotfiles := filepath.Join(t.TempDir(), "dotfiles")
+	ucTestWrite(t, dotfiles, AutoConfName, "auto-enabled=false\n")
+	ucTestWrite(t, dotfiles, WordsName, "ghbdtn\n")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{AutoConfName, WordsName} {
+		if err := os.Symlink(filepath.Join(dotfiles, name), filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := SetAutoEnabled(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendListEntry(dir, WordsName, "rfr"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{AutoConfName, WordsName} {
+		fi, err := os.Lstat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s was replaced by a regular file (mode %v)", name, fi.Mode())
+		}
+	}
+	if got := ucTestRead(t, dotfiles, AutoConfName); !strings.Contains(got, "auto-enabled=true") {
+		t.Fatalf("linked auto.conf not updated:\n%s", got)
+	}
+	if got := ucTestRead(t, dotfiles, WordsName); !strings.Contains(got, "rfr") {
+		t.Fatalf("linked word list not updated:\n%s", got)
+	}
+	if c := ucTestLoad(t, dir); !c.Settings.AutoEnabled || !c.Words.Contains("rfr") {
+		t.Fatalf("Load through the links: auto-enabled=%v words=%q", c.Settings.AutoEnabled, c.Words.Entries())
+	}
+	ucTestNoTemps(t, dir)
+	ucTestNoTemps(t, dotfiles)
+}
+
 func TestAtomicWriteLeavesNoTempOnFailure(t *testing.T) {
 	dir := ucTestDir(t)
 	ucTestWrite(t, dir, AutoConfName, "auto-enabled=true\n")

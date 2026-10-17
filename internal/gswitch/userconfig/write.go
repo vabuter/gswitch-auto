@@ -64,7 +64,13 @@ func withLock(dir string, fn func() error) error {
 // writeAtomic writes data to a temporary file in the target's directory,
 // syncs it and renames it over the target; the result has mode 0600. On any
 // failure the temporary file is removed and the target is left untouched.
+// A target that is a symlink (dotfiles managers such as stow) is written
+// through: the file it resolves to is replaced in its own directory and the
+// link is kept. A dangling link is replaced by a regular file.
 func writeAtomic(path, data string) (err error) {
+	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
+		path = resolved
+	}
 	dir, base := filepath.Split(path)
 	tmp, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
