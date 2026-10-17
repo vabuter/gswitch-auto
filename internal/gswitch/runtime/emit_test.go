@@ -324,11 +324,21 @@ func emitTestKeyScriptRecords(t *testing.T) map[string]string {
 	for _, sc := range emitTestKeyScripts {
 		cfg := &Config{LayoutSwitchKey: sc.lsKeys, ConvertKey: sc.convKey, ReverseMode: sc.reverse}
 		s, output := emitTestSwitcher(t, emitTestPathBlind, cfg)
+		// Canonicalise each conversion separately: every one starts with
+		// shift releases in map order.
+		var emitted []KeyEvent
+		seen := 0
 		for _, ev := range emitTestSeq(t, sc.script) {
 			s.processKeyEvent(&InputEvent{Type: EV_KEY, Code: ev.Code, Value: ev.Value})
+			if all := emitTestCaptured(t, output); len(all) > seen {
+				emitted = append(emitted, emitTestCanonicalEmitted(all[seen:])...)
+				seen = len(all)
+			}
 		}
-		emitted := emitTestCaptured(t, output)
-		got["keys/"+sc.name] = fmt.Sprintf("%s | buf=%d", emitTestFormat(emitTestCanonicalEmitted(emitted)), s.converter.BufferLen())
+		if emitted == nil {
+			emitted = []KeyEvent{}
+		}
+		got["keys/"+sc.name] = fmt.Sprintf("%s | buf=%d", emitTestFormat(emitted), s.converter.BufferLen())
 	}
 	return got
 }
