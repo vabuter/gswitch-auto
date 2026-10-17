@@ -481,3 +481,39 @@ func TestForkTrayFilesAvoidSharedSessionBus(t *testing.T) {
 		})
 	}
 }
+
+// TestPublishAutoStateAppliesLatestStatus: publishAutoState runs on several
+// goroutines (IPC callback, config watcher), so their queued updates may run
+// out of order. Whatever the order, the update that runs last must show the
+// newest status, never an older copy captured before it.
+func TestPublishAutoStateAppliesLatestStatus(t *testing.T) {
+	gaTestUseLanguage(t, "en")
+	orig := scheduleGTK
+	scheduleGTK = func(fn func()) { fn() } // no settings window: a no-op
+	t.Cleanup(func() { scheduleGTK = orig })
+
+	tray := &Tray{backend: &recordingTrayBackend{}, stopChan: make(chan struct{}), uiOps: make(chan func(), 8)}
+	a := &App{tray: tray}
+	unsaved := ipc.ClientStatus{Connected: true, Status: ipc.Status{
+		AutoEnabled: true, AutoAvailable: true, AutoEnabledUnsaved: true,
+	}}
+	saved := unsaved
+	saved.AutoEnabledUnsaved = false
+
+	a.onDaemonStatus(unsaved) // e.g. the watcher's update, queued first
+	a.onDaemonStatus(saved)
+	var ops []func()
+	for len(tray.uiOps) > 0 {
+		ops = append(ops, <-tray.uiOps)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("queued %d tray updates, want 2", len(ops))
+	}
+	slices.Reverse(ops) // the older update runs last
+	for _, op := range ops {
+		op()
+	}
+	if tray.autoStatus.AutoEnabledUnsaved {
+		t.Fatal("an older status queued before the newest one was applied last")
+	}
+}

@@ -308,21 +308,32 @@ func effectiveAutoState(st ipc.ClientStatus, cfg *userconfig.Config) ipc.ClientS
 }
 
 // publishAutoState pushes the current state to the tray menu and the
-// settings window. It never blocks.
+// settings window. It never blocks. It is called from several goroutines
+// (IPC callbacks, the config watcher, toggles), so the queued updates read
+// the state when they run instead of capturing a copy: an update queued
+// with an older copy could otherwise be applied after a newer one and stay
+// on screen.
 func (a *App) publishAutoState() {
 	a.mu.Lock()
-	st := a.autoStatus
-	cfg := a.userConfig
 	tray := a.tray
 	a.mu.Unlock()
 	if tray != nil {
-		tray.UpdateAutoState(effectiveAutoState(st, cfg))
+		tray.UpdateAutoState(a.effectiveAutoStateNow)
 	}
 	scheduleGTK(func() {
 		if w := a.currentSettingsWindow(); w != nil {
-			w.setDaemonStatus(st)
+			w.setDaemonStatus(a.daemonStatus())
 		}
 	})
+}
+
+// effectiveAutoStateNow returns effectiveAutoState of the latest daemon
+// status and user configuration.
+func (a *App) effectiveAutoStateNow() ipc.ClientStatus {
+	a.mu.Lock()
+	st, cfg := a.autoStatus, a.userConfig
+	a.mu.Unlock()
+	return effectiveAutoState(st, cfg)
 }
 
 // ToggleAuto flips automatic correction: through the daemon while it is

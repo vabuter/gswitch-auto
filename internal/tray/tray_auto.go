@@ -44,12 +44,15 @@ func (t *Tray) handleAutoToggleClick() {
 	}
 }
 
-// UpdateAutoState queues an automatic correction state update. While no
-// daemon is connected the status carries Connected=false and the auto-enabled
-// value of auto.conf.
-func (t *Tray) UpdateAutoState(st ipc.ClientStatus) {
+// UpdateAutoState queues an automatic correction state update. current is
+// called on the tray event loop when the update runs and returns the latest
+// state, so updates queued from several goroutines (IPC callbacks, the
+// config watcher) can never apply an older state after a newer one. While no
+// daemon is connected the status carries Connected=false and the
+// auto-enabled value of auto.conf.
+func (t *Tray) UpdateAutoState(current func() ipc.ClientStatus) {
 	t.enqueueUIReliable(func() {
-		t.applyAutoState(st)
+		t.applyAutoState(current())
 	})
 }
 
