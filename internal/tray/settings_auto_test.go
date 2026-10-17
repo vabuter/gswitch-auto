@@ -291,6 +291,24 @@ func TestAutoNotices(t *testing.T) {
 	}
 }
 
+func TestAutoToggleWroteFile(t *testing.T) {
+	connected := ipc.ClientStatus{Connected: true}
+	for _, tt := range []struct {
+		hasApp bool
+		daemon ipc.ClientStatus
+		want   bool
+	}{
+		{false, ipc.ClientStatus{}, true},
+		{false, connected, true},
+		{true, ipc.ClientStatus{}, true}, // service stopped: the tray wrote auto.conf
+		{true, connected, false},         // the checkbox follows the daemon status
+	} {
+		if got := autoToggleWroteFile(tt.hasApp, tt.daemon); got != tt.want {
+			t.Errorf("autoToggleWroteFile(%v, connected=%v) = %v, want %v", tt.hasApp, tt.daemon.Connected, got, tt.want)
+		}
+	}
+}
+
 func TestServiceButtonSensitivity(t *testing.T) {
 	for _, tt := range []struct {
 		status               ServiceStatus

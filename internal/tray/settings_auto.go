@@ -552,12 +552,22 @@ func (w *SettingsWindow) onAutoEnabledToggled() {
 			}
 			if err != nil {
 				w.showErrorDialog(tr(strGAErrorToggle), err.Error())
-			} else if app == nil {
+			} else if autoToggleWroteFile(app != nil, w.auto.daemon) {
 				w.auto.fileEnabled = enabled
 			}
 			w.refreshAutoStatus()
 		})
 	}()
+}
+
+// autoToggleWroteFile reports whether a successful toggle from the window
+// went to auto.conf (no daemon connected; always without an App): the
+// checkbox must then show the written value at once instead of flipping back
+// to the stale file value until the watcher reports the write (and for good
+// when no watcher runs). While a daemon is connected the checkbox follows its
+// status.
+func autoToggleWroteFile(hasApp bool, daemon ipc.ClientStatus) bool {
+	return !hasApp || !daemon.Connected
 }
 
 // autoApplyPlan is the user-level part of an Apply: auto.conf keys that
