@@ -15,7 +15,8 @@
 # Steps: preflight (tools, every packaged source path, version rules, extension
 # consistency) -> go test ./... -> CGO build of builds/gswitch and
 # builds/gswitch-tray with -X main.version=V -> nfpm -> sha256 checksums.txt ->
-# metadata assertions on the RPM (rpm -qp).
+# metadata assertions on the RPM (rpm -qp) -> upgrade dry run (rpm -U --test)
+# when upstream gswitch or an older gswitch-auto is installed on this host.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
@@ -261,6 +262,14 @@ for f in \
     /etc/xdg/autostart/gswitch-daemon.desktop \
     /usr/share/applications/gswitch-tray.desktop \
     /usr/share/polkit-1/actions/com.github.arumata.gswitch.policy \
+    /usr/share/icons/hicolor/16x16/apps/gswitch.png \
+    /usr/share/icons/hicolor/22x22/apps/gswitch.png \
+    /usr/share/icons/hicolor/24x24/apps/gswitch.png \
+    /usr/share/icons/hicolor/32x32/apps/gswitch.png \
+    /usr/share/icons/hicolor/48x48/apps/gswitch.png \
+    /usr/share/icons/hicolor/64x64/apps/gswitch.png \
+    /usr/share/icons/hicolor/128x128/apps/gswitch.png \
+    /usr/share/icons/hicolor/256x256/apps/gswitch.png \
     /usr/share/icons/hicolor/scalable/apps/gswitch.svg \
     "/usr/share/gnome-shell/extensions/$extension_uuid/metadata.json" \
     "/usr/share/gnome-shell/extensions/$extension_uuid/extension.js" \
@@ -312,6 +321,36 @@ else
 fi
 expect "packaged user unit is byte-identical to $reference" \
     cmp -s "$tmp/usr/lib/systemd/user/gswitch.service" "$tmp/upstream.service"
+
+# Upgrade path on this host (Fedora): when upstream gswitch or an older
+# gswitch-auto is installed, the new package must sort above it, the
+# Obsoletes bound must cover an installed upstream package, and an rpm
+# dry run (--test: reads the rpmdb, installs nothing, needs no root) must
+# accept the upgrade. Skipped on hosts without either package (CI).
+step "Upgrade path"
+new_evr="$version-$release"
+upgrade_checked=false
+if installed=$(rpm -q --qf '%{EVR}\n' gswitch 2>/dev/null | head -n 1) && [[ -n $installed ]]; then
+    upgrade_checked=true
+    expect "$new_evr sorts above installed gswitch $installed" \
+        test "$(scripts/version.sh --vercmp "$new_evr" "$installed")" = 1
+    expect "Obsoletes gswitch < ${obsoletes_bound:-?} covers installed gswitch $installed" \
+        test "$(scripts/version.sh --vercmp "$installed" "${obsoletes_bound:-0}")" = -1
+fi
+if installed_auto=$(rpm -q --qf '%{EVR}\n' gswitch-auto 2>/dev/null | head -n 1) && [[ -n $installed_auto ]]; then
+    if [[ $(scripts/version.sh --vercmp "$new_evr" "$installed_auto") == 1 ]]; then
+        upgrade_checked=true
+    else
+        printf 'note  installed gswitch-auto %s is not older than %s; no upgrade dry run\n' \
+            "$installed_auto" "$new_evr"
+    fi
+fi
+if [[ $upgrade_checked == true ]]; then
+    expect "rpm -U --test accepts the upgrade on this host" \
+        rpm -U --test --nosignature "$rpm_file"
+else
+    printf 'note  neither gswitch nor an older gswitch-auto is installed; upgrade dry run skipped\n'
+fi
 
 if ((failures > 0)); then
     die "$failures RPM assertion(s) failed for $rpm_file"

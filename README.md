@@ -14,7 +14,9 @@ in the wrong keyboard layout. Upstream declined automatic correction (issues
 release ([docs/FORK.md](docs/FORK.md), in Russian). Please report problems with
 the fork [here](https://github.com/vabuter/gswitch-auto/issues), not upstream.
 
-> **Status:** in development. The first release will be `v0.8.0+auto.1`.
+> **Status:** in development. The first release will be `v0.8.0+auto.1`;
+> until then `make rpm` builds development packages versioned
+> `0.8.0+auto.0.dev<n>.g<commit>`, which already replace upstream 0.8.0.
 
 What the fork adds on top of upstream 0.8.0:
 
@@ -60,6 +62,7 @@ and no LLM.
 
 ```bash
 make rpm                                      # or download the RPM from Releases
+rpm -U --test ./dist/gswitch-auto-*.rpm       # optional dry run: changes nothing, needs no root
 sudo dnf install ./dist/gswitch-auto-*.rpm    # replaces the upstream gswitch package
 systemctl --user enable --now gswitch.service # only if it is not already running
 ```
@@ -68,7 +71,8 @@ The `gswitch-auto` package provides `gswitch`, obsoletes `gswitch < 0.9` and
 keeps the binary names and file paths, so it replaces an installed upstream
 package in place. If upstream's service was enabled, the package enables it again
 after the replacement. Log out and back in once afterwards, so that GNOME Shell
-loads the bundled extension (needed for application exclusions). Rollback:
+loads the bundled extension (needed for application exclusions) and the new
+tray starts. Rollback:
 `sudo dnf swap gswitch-auto ./gswitch_0.8.0_linux_amd64.rpm`, then
 `systemctl --user enable --now gswitch.service`. Build requirements and make
 targets are listed in [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -125,8 +129,12 @@ gswitch --layout-state [--watch SECONDS]     # show the IBus layout tracker stat
 `--auto-check ghbdtn --shown us` reports a fix to `привет`: `verdict` and
 `reason` are the detector's, `engine` is what automatic correction would do
 (`arm`, or the reason it skips the word, such as `lexical:digit` for
-`ghb2`). `--layout-state` prints the IBus bus address and the active engine
-(`xkb:us::eng` → 0). Neither needs root or input devices.
+`ghb2`). Without `--shown`, the layout is inferred from the text. It uses
+the detector settings and exception words from `~/.config/gswitch`.
+`--layout-state` prints the layout pair, the IBus bus address and the active
+engine with the layout it maps to (`xkb:ru::rus` → `ru`, index 1), then
+follows changes for 10 seconds (`--watch 0` prints once). Neither needs root
+or input devices.
 
 ### D-Bus interface
 
@@ -165,8 +173,12 @@ session bus. It exposes no window titles, no text and no process ids, and it
 is disabled by GNOME Shell on the lock screen.
 
 GNOME Shell loads new or updated extensions only at login: log out and back in
-after installing or upgrading, then enable it in the tray settings or with
-`gnome-extensions enable gswitch-focus@vabuter.github.io`. Without the
+after installing or upgrading, then enable it in the tray settings (Auto
+correction tab, Excluded applications, **Enable**) or with
+`gnome-extensions enable gswitch-focus@vabuter.github.io`; no second login is
+needed. Before that login, `gnome-extensions enable` fails because the running
+Shell has not seen the extension; the tray's **Enable at next login** button
+adds it to `org.gnome.shell enabled-extensions` instead. Without the
 extension, application exclusions and password/terminal detection are
 inactive and automatic mode keeps working elsewhere; set
 `auto-require-focus=true` to turn automatic mode off instead.

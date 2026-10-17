@@ -25,7 +25,7 @@ upstream-файлов, установка и откат. Контракт реа
 |---|---|---|
 | Релиз (тег `v<upstream>+auto.<N>` на чистом HEAD) | `<upstream>+auto.<N>`, Release `1` | `0.8.0+auto.1-1` |
 | Коммиты после тега или грязное дерево | `<upstream>+auto.<N>.dev<n>.g<sha>[.dirty]` | `0.8.0+auto.1.dev3.g1a2b3c4` |
-| До первого тега на данной базе | `<upstream>+auto.0.dev<n>.g<sha>[.dirty]` | `0.8.0+auto.0.dev16.g90407de` |
+| До первого тега на данной базе | `<upstream>+auto.0.dev<n>.g<sha>[.dirty]` | `0.8.0+auto.0.dev64.g1a2b3c4` |
 
 - `<upstream>` — ближайший достижимый тег upstream `vX.Y.Z`; `<n>` — число коммитов
   после тега. Считает `scripts/version.sh` (`make version`); переменная окружения
@@ -64,10 +64,31 @@ make install    # make rpm + sudo dnf install
 `check-extension.sh` → `go test ./...` → CGO-сборка с `-X main.version=V` → nfpm →
 `checksums.txt` → проверки `rpm -qp`: Provides `gswitch = V-R`, Obsoletes
 `gswitch < 0.9`, нет Conflicts, лицензия, оба бинарника 0755, unit, udev-правило,
-polkit, `metadata.json` расширения, `hunspell-ru-LICENSE` (%license), README (%doc),
+polkit, desktop-файлы, все иконки, `metadata.json` и `extension.js` расширения
+(каталог 0755, файлы 0644), лицензии, `hunspell-ru-LICENSE` (%license), README (%doc),
 `default.conf` (%config(noreplace)), скриптлеты pretrans/posttrans, нет
 `/usr/lib/systemd/system/gswitch.service`, упакованный user unit побайтно совпадает с
-`configs/gswitch.service` из тега upstream `v<base>`.
+`configs/gswitch.service` из тега upstream `v<base>` → проверка пути обновления: если на
+хосте стоит upstream `gswitch` (или более старый `gswitch-auto`), новая версия должна
+быть выше установленной, граница Obsoletes — покрывать установленный `gswitch`, а
+`rpm -U --test` — принять обновление (только читает rpmdb, ничего не ставит, root не
+нужен). В CI (пустая rpmdb Ubuntu) этот шаг пропускается.
+
+### Проверка пакета без установки
+
+```bash
+R=dist/gswitch-auto-<V>-1.x86_64.rpm
+rpm -qpi $R; rpm -qpR $R                       # метаданные, Requires (systemd, gtk3)
+rpm -qp --provides $R                          # gswitch = <V>-1, gswitch-auto = <V>-1
+rpm -qp --obsoletes $R; rpm -qp --conflicts $R # gswitch < 0.9; пусто
+rpm -qplv $R                                   # файлы и права
+rpm -qp --scripts $R | grep scriptlet          # pretrans … posttrans
+rpm -U --test $R                               # пробное обновление поверх gswitch-0.8.0-1
+scripts/version.sh --vercmp <V>-1 0.8.0-1      # 1 = новее (сравнение как в rpm)
+```
+
+`rpm -Uvv --test $R 2>&1 | grep Obsoletes` показывает
+`Obsoletes: gswitch < 0.9 erases gswitch-0.8.0-1.x86_64`.
 
 ## Релиз (чек-лист)
 
@@ -125,7 +146,6 @@ polkit, `metadata.json` расширения, `hunspell-ru-LICENSE` (%license), 
 | `internal/gswitch/runtime/converter.go` | `undoGen`, `ConvertRange(start, end)`, `UndoGeneration()`; `Convert` = scan + `ConvertRange` |
 | `internal/gswitch/runtime/switcher.go` | `emitConversionEvents`/`layoutReader()`; поля форка в структуре; однострочные хуки: `initFork`, `layoutSpecs`, `startFork`/`stopFork`, `controlChan`, `loopWait`/`autoTick`, `forkPreProcess`, `OnSpace`, `forkBeforeConversion`, `afterInputDiscarded` |
 | `internal/gswitch/runtime/layout.go` | `LayoutInfo.Unmapped` |
-| `internal/gswitch/runtime/runner.go` | необязательно: вывод предупреждений user-config в debug |
 | `internal/gswitch/cli.go` | `--auto-check`, `--layout-state` |
 | `internal/tray/settings_window.go` | вкладки, Start/Stop, загрузка/применение user-config |
 | `internal/tray/tray.go` | пункт меню автомода, бейдж, подсказка |
@@ -135,14 +155,20 @@ polkit, `metadata.json` расширения, `hunspell-ru-LICENSE` (%license), 
 | `internal/tray/detection_status.go` | `Scancodes []uint16` |
 | `internal/tray/settings_language.go` | переименование пункта автомода при смене языка |
 | `internal/i18n/i18n.go`, `i18n_test.go`, `locales/en.json`, `locales/ru.json` | политика префикса `strGA` и строки форка |
+| `runtime/converter_test.go`, `runtime/layout_test.go`, `tray/key_picker_test.go`, `tray/tray_initial_appearance_test.go` | тесты к изменениям выше (только добавления, кроме подстройки appearance-теста) |
 | `.goreleaser.yml` | удалён (заменён `packaging/nfpm.yaml`) |
 | `.github/workflows/ci.yml`, `.github/workflows/release.yml` | RPM-сборка и проверки, install-test, релиз через `gh` |
-| `.golangci.yml` | исключения для пакетов форка (при финализации) |
-| `README.md`, `.github/SECURITY.md`, `CONTRIBUTING.md`, `CLAUDE.md` | документация форка |
+| `.gitignore` | `*.rpm` (upstream-RPM в корне для отката не коммитится) |
+| `README.md`, `.github/SECURITY.md`, `CONTRIBUTING.md` | документация форка (`CLAUDE.md` — новый файл форка) |
+
+Список сверяется командой `git diff --name-status upstream/main HEAD | grep -v '^A'`
+(форк сидит на `upstream/main` = v0.8.0 + 14 коммитов без изменений `.go`).
 
 Намеренно **не** изменяются: `internal/gswitch/runtime/{types.go,input_reader.go,
-gnome_wayland_layout_switch.go,deps.go}` (и тест `gnome_wayland_layout_switch_test.go`),
-`internal/gswitch/config/*`,
+gnome_wayland_layout_switch.go,deps.go,runner.go}` (и тест `gnome_wayland_layout_switch_test.go`),
+`internal/gswitch/config/*`, `.golangci.yml` (исключения из SPEC §3.13 не понадобились:
+`userconfig` открывает файлы через `filepath.Clean`, в `ipc/introspect.go` нет длинных
+функций, остальное закрыто точечными `//nolint` с причиной),
 `scripts/{preinstall,postinstall,preremove,postremove}.sh`, systemd user unit, udev-правило,
 polkit-политика, desktop-файлы, `configs/default.conf`, `.github/workflows/{obs,codeql}.yml`,
 `.github/dependabot.yml`. Остальное в форке — новые файлы (`packaging/nfpm.yaml`,
@@ -203,7 +229,23 @@ gnome-extensions disable gswitch-focus@vabuter.github.io   # по желанию
 
 ## Решения, принятые при реализации
 
-Заполняется при финализации (WP10 после интеграции): значение `auto-min-letters` по
-умолчанию (3 или 4, по итогам eval-гейта детектора, SPEC §6.2/Q3), измеренные
-`auto-delay-ms`/`auto-switch-delay-ms` на GNOME 50, результат M9 (момент срабатывания
-`<Alt>Shift_L` в порядке RAlt-first).
+- `auto-min-letters` по умолчанию **3** (паритет с punto-rs, SPEC Q3): Go-порт проходит
+  eval-гейт с `DefaultOptions` — 0 ложных исправлений на обоих сплитах; recall test:
+  ru_wrong 102/105, en_wrong 95/100, двухбуквенные 14/26; dev: 101/105, 94/101, 13/24
+  (`go test ./internal/gswitch/lang -run TestEvalGates -v`).
+- Вето `edge-shown-known` (SPEC C29): слово с конечной пунктуацией, чьё показанное ядро —
+  словарное английское слово со средней стоимостью триграмм ≤ 6.0 бит/букву, не
+  исправляется (`it.`, `bye.`); цена — редкие русские слова вроде `ct.`→`сею`.
+- `auto-delay-ms=3`, `auto-switch-delay-ms=60`, `auto-holdoff-ms=120` — значения из SPEC;
+  на GNOME 50 **не измерялись** (нужен ручной прогон M6 на хосте; агенты не нажимают
+  клавиши). Если после замены первые буквы набираются в старой раскладке — поднять
+  `auto-switch-delay-ms`; если буквы теряются или переставляются — `auto-delay-ms`.
+- M9 (момент срабатывания `<Alt>Shift_L` при RAlt-first в аккорде выделения) не
+  прогонялся; демон в любом случае восстанавливает раскладку, если она переключилась
+  во время аккорда (SPEC C14), а README советует нажимать Shift первым.
+- `Obsoletes: gswitch < 0.9` при `Provides: gswitch = V-R` (решение D7): диапазон
+  Obsoletes перекрывает собственный Provides, поэтому rpmlint, вероятно, выдаст
+  предупреждение `self-obsoletion` (rpmlint на хосте нет). rpm и dnf сопоставляют
+  Obsoletes с **именами** пакетов, так что на установку это не влияет (`rpm -U --test`
+  стирает только `gswitch-0.8.0-1`). Если предупреждение станет проблемой — вариант
+  Fedora для переименований `Obsoletes: gswitch < V-R`, но это изменение D7.

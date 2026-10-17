@@ -13,7 +13,9 @@ upstream v0.8.0 plus fork commits; the Go module path stays `github.com/arumata/
 keep rebases onto upstream releases small. The fork ships as the RPM `gswitch-auto`, which
 obsoletes and replaces upstream's `gswitch` package (same binaries and paths). Upstream
 gswitch 0.8.0 (manual double-Shift correction only) is installed on the host from the RPM
-kept at the repo root (gitignored).
+kept at the repo root (gitignored). `make rpm` builds the replacement
+`dist/gswitch-auto-<V>-1.x86_64.rpm`; installing it (`make install`, needs sudo) and the
+manual test script (SPEC §6.4) are done by the user.
 
 Read in this order; do not redo the research:
 
@@ -48,6 +50,20 @@ sudo gswitch --configure                       # interactive config -> /etc/gswi
 (`gswitch-tray`) autostarts via `/etc/xdg/autostart/`; its panel icon needs the
 AppIndicator GNOME extension, which is installed and listed in `enabled-extensions`.
 
+Fork additions (the first two also work from `builds/gswitch` without installing):
+
+```bash
+gswitch --auto-check ghbdtn --shown us         # detector + engine verdict as JSON (fix -> привет, engine arm)
+gswitch --layout-state --watch 0               # IBus address, global engine, mapped layout index
+busctl --user introspect io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto
+gnome-extensions info gswitch-focus@vabuter.github.io   # focus extension state (after relogin)
+```
+
+Per-user fork settings live in `~/.config/gswitch/{auto.conf,exceptions-words.txt,
+exceptions-apps.txt}` (written by the tray only; the daemon reads them). Auto mode is off by
+default; LShift+RShift toggles it, LShift+RAlt+RCtrl converts the selection (README has
+the full key reference).
+
 ## Facts that constrain any fork (verified 2026-10-09, see research/)
 
 - Upstream rejected automatic correction (issues #12, #31 "not planned"); development
@@ -81,8 +97,9 @@ make test                                                 # go test ./... (upstr
 go test ./internal/gswitch/runtime -run 'TestName'        # single test
 make vet                                                  # go vet ./...
 make ext-check                                            # scripts/check-extension.sh
-make version                                              # e.g. 0.8.0+auto.0.dev16.g90407de (scripts/version.sh)
+make version                                              # e.g. 0.8.0+auto.0.dev64.g1a2b3c4 (scripts/version.sh)
 make rpm                                                  # dist/gswitch-auto-<V>-1.x86_64.rpm + checksums.txt
+scripts/version.sh --verify                               # rpm ordering rules + Obsoletes bound
 make install                                              # make rpm + sudo dnf install (user runs this)
 golangci-lint run                                         # config in .golangci.yml (CI only here)
 ```
@@ -90,7 +107,10 @@ golangci-lint run                                         # config in .golangci.
 `make rpm` runs `scripts/build-rpm.sh`: preflight (every `src:` in `packaging/nfpm.yaml`
 must exist), `scripts/version.sh --verify`, the extension check, `go test ./...`, CGO
 build, nfpm, `checksums.txt`, then `rpm -qp` assertions (Provides `gswitch = V-R`,
-Obsoletes `gswitch < 0.9`, no Conflicts, packaged user unit byte-identical to upstream).
+Obsoletes `gswitch < 0.9`, no Conflicts, packaged user unit byte-identical to upstream)
+and, because upstream `gswitch-0.8.0-1` is installed here, an upgrade dry run
+(`rpm -U --test`: reads the rpmdb, installs nothing, needs no root). Inspect a build with
+`rpm -qpi`, `rpm -qpR`, `rpm -qp --provides/--obsoletes/--scripts`, `rpm -qplv`.
 Versions are `<upstream>+auto.<N>` from tags `v<upstream>+auto.<N>`; dev builds get
 `.dev<n>.g<sha>[.dirty]`; `~` versions are forbidden (they sort below upstream).
 Gated test suites: `GSWITCH_IBUS_TEST=1`, `GSWITCH_DBUS_TEST=1` (`dbus-run-session`),

@@ -15,6 +15,9 @@
 #   scripts/version.sh --verify   check the rpm ordering rules, the computed
 #                                 version and the Obsoletes bound in
 #                                 packaging/nfpm.yaml; prints the version last
+#   scripts/version.sh --vercmp A B
+#                                 compare two [E:]V[-R] strings as rpm does;
+#                                 prints -1, 0 or 1 (used by build-rpm.sh)
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
@@ -224,6 +227,10 @@ case "${1:-}" in
     '') compute_version ;;
     --base) base_of "$(compute_version)" ;;
     --verify) verify ;;
+    --vercmp)
+        [[ $# -eq 3 && -n $2 && -n $3 ]] || die "usage: version.sh --vercmp A B"
+        vercmp "$2" "$3"
+        ;;
     -h | --help) usage ;;
     *)
         usage >&2
