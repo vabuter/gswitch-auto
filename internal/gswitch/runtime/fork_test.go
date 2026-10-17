@@ -623,6 +623,39 @@ func TestLearnedWordsPendingUntilFileHasThem(t *testing.T) {
 	}
 }
 
+// TestWatchUserConfigAppliesChangeBeforeWatchStart: a change made between
+// initFork's Load and the start of the watcher (the tray seeding
+// exceptions-apps.txt at the first login) is applied, not taken as the
+// watcher's baseline.
+func TestWatchUserConfigAppliesChangeBeforeWatchStart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), userconfig.DirName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := forkTestSwitcher(t, &Config{})
+	s.userDir = dir
+	c, _ := userconfig.Load(dir)
+	s.userCfg.Store(c)
+	if err := userconfig.EnsureFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.forkWG.Add(1)
+	go s.watchUserConfig(ctx)
+	defer func() {
+		cancel()
+		s.forkWG.Wait()
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for !s.userCfg.Load().Apps.MatchApp("org.keepassxc.keepassxc", "") {
+		if time.Now().After(deadline) {
+			t.Fatalf("seeded exclusion list not applied: apps %q", s.userCfg.Load().Apps.Entries())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestLearnWordConcurrentReloadKeepsWord: a reload that runs at the same time
 // as learnWord (watcher or D-Bus Reload goroutine against the Run goroutine)
 // never drops the newly learned word from the detector.

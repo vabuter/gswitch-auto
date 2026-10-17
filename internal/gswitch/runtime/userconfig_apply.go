@@ -77,9 +77,13 @@ func (s *Switcher) initDetector(c *userconfig.Config) {
 }
 
 // watchUserConfig follows the configuration directory until ctx is done.
+// The configuration applied so far is the watcher's baseline, so a change
+// made between initFork's Load and the start of the watch (for example the
+// tray seeding exceptions-apps.txt at the first login) is applied too.
 func (s *Switcher) watchUserConfig(ctx context.Context) {
 	defer s.forkWG.Done()
-	if err := userconfig.Watch(ctx, s.userDir, s.applyUserConfig, userconfig.Options{}); err != nil {
+	opts := userconfig.Options{Baseline: s.userCfg.Load()}
+	if err := userconfig.Watch(ctx, s.userDir, s.applyUserConfig, opts); err != nil {
 		s.log("Warning: user config watcher: %v", err)
 	}
 }

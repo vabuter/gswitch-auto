@@ -1064,9 +1064,11 @@ func RemoveListEntry(dir, name, entry string) error
 // Concurrent appends made after the caller loaded its snapshot are preserved.
 func ApplyListDiff(dir, name string, add, remove []string) error
 
-type Options struct{ Debounce, PollInterval time.Duration; ForcePoll bool } // 200ms, 2s
+type Options struct{ Debounce, PollInterval time.Duration; ForcePoll bool; Baseline *Config } // 200ms, 2s
 // Watch blocks until ctx is done and then returns nil (non-nil only for invalid arguments). It
-// does NOT fire an initial callback: callers Load first. onChange runs on the watcher goroutine,
+// does NOT fire an initial callback: callers Load first and pass that Config as Baseline; when the
+// directory differs from Baseline once the watch is installed (a change between the caller's Load
+// and the watch start), onChange fires at once. onChange runs on the watcher goroutine,
 // only when the loaded Config differs from the previous one (!Equal). A missing directory is
 // polled for (PollInterval) and watched once it appears.
 func Watch(ctx context.Context, dir string, onChange func(*Config), opts Options) error

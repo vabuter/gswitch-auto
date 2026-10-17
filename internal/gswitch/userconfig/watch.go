@@ -40,12 +40,19 @@ type Options struct {
 	Debounce     time.Duration // DefaultDebounce
 	PollInterval time.Duration // DefaultPollInterval
 	ForcePoll    bool          // never use inotify
+	// Baseline is the configuration the caller loaded and applied before
+	// calling Watch. When it is set and the directory differs from it once
+	// the watch is installed, onChange fires at once, so a change made
+	// between the caller's Load and the start of the watch is not lost.
+	// nil: the watcher's own initial Load is the baseline.
+	Baseline *Config
 }
 
 // Watch blocks until ctx is done and then returns nil (non-nil only for
 // invalid arguments). It does NOT fire an initial callback: callers Load
-// first. onChange runs on the watcher goroutine, only when the loaded Config
-// differs from the previous one (!Equal). The directory is watched with
+// first (and pass that Config as Options.Baseline to catch changes made
+// before the watch started). onChange runs on the watcher goroutine, only
+// when the loaded Config differs from the previous one (!Equal). The directory is watched with
 // inotify (debounced) with a periodic stamp re-check; without inotify, or
 // with ForcePoll, it is polled every PollInterval. A missing directory is
 // polled for and watched once it appears; a removed and recreated directory
@@ -105,6 +112,10 @@ func (w *dirWatcher) run(ctx context.Context) {
 	w.startInotify()
 	w.current, _ = Load(w.dir)
 	w.stamps = w.current.stamps
+	if b := w.opts.Baseline; b != nil && !w.current.Equal(b) {
+		// Changed since the caller's Load, before anything watched it.
+		w.onChange(w.current)
+	}
 	if testHookWatchReady != nil {
 		testHookWatchReady()
 	}

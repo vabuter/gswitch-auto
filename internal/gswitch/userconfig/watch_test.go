@@ -117,6 +117,33 @@ func TestWatchNoInitialCallbackAndIdenticalRewrite(t *testing.T) {
 	w.none(t, 400*time.Millisecond)
 }
 
+// TestWatchBaselineCatchesEarlierChange: a change made between the caller's
+// Load and the start of the watch (the tray seeding exceptions-apps.txt while
+// the daemon starts) is reported once the watch is installed.
+func TestWatchBaselineCatchesEarlierChange(t *testing.T) {
+	dir := ucTestDir(t)
+	ucTestWrite(t, dir, AutoConfName, "auto-enabled=false\n")
+	baseline, _ := Load(dir)
+	if baseline.Apps.Len() != 0 {
+		t.Fatalf("baseline apps = %q", baseline.Apps.Entries())
+	}
+	if err := EnsureFiles(dir); err != nil { // seeds exceptions-apps.txt
+		t.Fatal(err)
+	}
+	opts := ucTestFastWatch
+	opts.Baseline = baseline
+	w := ucTestStartWatch(t, dir, opts)
+	if c := w.next(t, time.Second); !c.Apps.MatchApp("org.keepassxc.keepassxc", "") {
+		t.Fatalf("callback apps = %q, want the seeded list", c.Apps.Entries())
+	}
+	w.none(t, 300*time.Millisecond)
+
+	// A baseline equal to the directory fires nothing.
+	current, _ := Load(dir)
+	opts.Baseline = current
+	ucTestStartWatch(t, dir, opts).none(t, 300*time.Millisecond)
+}
+
 func TestWatchDirMissingAtStart(t *testing.T) {
 	dir := ucTestDir(t)
 	w := ucTestStartWatch(t, dir, ucTestFastWatch)

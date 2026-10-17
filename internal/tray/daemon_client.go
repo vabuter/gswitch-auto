@@ -136,7 +136,9 @@ func (a *App) startFork() {
 	}
 	if dir != "" {
 		go func() {
-			if err := userconfig.Watch(ctx, dir, a.onUserConfigChanged, userconfig.Options{}); err != nil {
+			// cfg is the baseline: a change made since the Load above is
+			// reported once the watch is installed.
+			if err := userconfig.Watch(ctx, dir, a.onUserConfigChanged, userconfig.Options{Baseline: cfg}); err != nil {
 				fmt.Printf("Warning: failed to watch %s: %v\n", dir, err)
 			}
 		}()
