@@ -92,6 +92,7 @@ func (t *Tray) applyLanguage() {
 	if t.mServiceAction != nil {
 		t.mServiceAction.SetTooltip(tr(strMenuActionHint))
 	}
+	t.renderAutoMenuItem()
 	status := t.currentServiceStatus
 	t.currentServiceStatus = ServiceStatus(-1)
 	t.applyServiceStatus(status)

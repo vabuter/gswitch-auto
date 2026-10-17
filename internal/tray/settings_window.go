@@ -78,6 +78,16 @@ type SettingsWindow struct {
 	deviceManager             *DeviceManager
 	loadedConfig              *TrayConfig
 	conversionRecoveryWarning *gtk.Label
+
+	// gswitch-auto: notebook pages, Start/Stop beside Restart, the 2 s
+	// service refresh while visible and the "Auto correction" page
+	// (settings_auto.go).
+	notebook             *gtk.Notebook
+	startButton          *gtk.Button
+	stopButton           *gtk.Button
+	serviceRefreshActive bool
+	serviceRefreshBusy   bool
+	auto                 *autoSettings
 }
 
 // NewSettingsWindow creates a new settings window.
@@ -109,7 +119,7 @@ func (w *SettingsWindow) build() error {
 	w.languageCode = currentLanguage().Code()
 	w.window.SetTitle(tr(strWindowTitle))
 	setInterfaceDirection()
-	w.window.SetDefaultSize(500, 700)
+	w.window.SetDefaultSize(560, 720)
 	w.window.SetPosition(gtk.WIN_POS_CENTER)
 	w.window.SetResizable(true)
 
@@ -180,13 +190,34 @@ func (w *SettingsWindow) build() error {
 
 	scrolledWindow.Add(mainBox)
 
-	// Create outer box for scrolled content + buttons
+	// The upstream sections form the "General" page; gswitch-auto adds the
+	// "Auto correction" page.
+	w.notebook, err = gtk.NotebookNew()
+	if err != nil {
+		return fmt.Errorf("failed to create notebook: %w", err)
+	}
+	generalTab, err := gtk.LabelNew(tr(strGATabGeneral))
+	if err != nil {
+		return fmt.Errorf("failed to create notebook tab: %w", err)
+	}
+	w.notebook.AppendPage(scrolledWindow, generalTab)
+	autoPage, err := w.createAutoPage()
+	if err != nil {
+		return fmt.Errorf("failed to create auto correction page: %w", err)
+	}
+	autoTab, err := gtk.LabelNew(tr(strGATabAuto))
+	if err != nil {
+		return fmt.Errorf("failed to create notebook tab: %w", err)
+	}
+	w.notebook.AppendPage(autoPage, autoTab)
+
+	// Create outer box for notebook + buttons
 	outerBox, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0)
 	if err != nil {
 		return fmt.Errorf("failed to create outer box: %w", err)
 	}
 
-	outerBox.PackStart(scrolledWindow, true, true, 0)
+	outerBox.PackStart(w.notebook, true, true, 0)
 
 	// Create button box
 	buttonBox, err := w.createButtonBox()
@@ -240,7 +271,11 @@ func (w *SettingsWindow) createServiceSection() (*gtk.Frame, error) {
 		return nil, err
 	}
 	w.restartButton.Connect("clicked", w.onRestartClicked)
-	grid.Attach(w.restartButton, 2, 0, 1, 1)
+	serviceButtons, err := w.createServiceButtons()
+	if err != nil {
+		return nil, err
+	}
+	grid.Attach(serviceButtons, 2, 0, 1, 1)
 
 	// Row 1: Autostart checkbox
 	w.autostartCheck, err = gtk.CheckButtonNewWithLabel(tr(strCheckAutostart))
@@ -645,6 +680,7 @@ func (w *SettingsWindow) Show() {
 			w.updateServiceStatus()
 			w.window.ShowAll()
 			w.window.PresentWithTime(requestTime)
+			w.startServiceRefresh()
 		}
 	})
 }
@@ -675,6 +711,9 @@ func (w *SettingsWindow) loadConfig() {
 
 	// Load devices with blacklist info
 	w.loadDevices(cfg)
+
+	// gswitch-auto user configuration and focus extension status.
+	w.loadAutoConfig()
 
 	// Trigger detection status update after loading config
 	// (ignoreComboChanged is reset by defer, so we call async method after)
@@ -1119,6 +1158,13 @@ func (w *SettingsWindow) onApplyClicked() {
 		w.showErrorDialog(tr(strErrorValidation), err.Error())
 		return
 	}
+	// gswitch-auto: user-level settings are written to the user directory
+	// and reloaded over D-Bus, without pkexec or a service restart.
+	autoPlan, err := w.prepareAutoApply(cfg)
+	if err != nil {
+		w.showErrorDialog(tr(strErrorValidation), err.Error())
+		return
+	}
 	daemonConfigChanged := w.loadedConfig == nil || !sameTrayConfig(cfg, w.loadedConfig)
 
 	// Check auto-detect status before saving
@@ -1148,6 +1194,7 @@ func (w *SettingsWindow) onApplyClicked() {
 	}
 
 	go func() {
+		autoSaved := w.runAutoApply(autoPlan)
 		traySaveErr := w.saveInterfacePreferences(UIPreferences{IconMode: iconMode, Language: language})
 		if traySaveErr != nil {
 			glib.IdleAdd(func() {
@@ -1157,7 +1204,9 @@ func (w *SettingsWindow) onApplyClicked() {
 		}
 		if !daemonConfigChanged {
 			glib.IdleAdd(func() {
-				w.Hide()
+				if autoSaved {
+					w.Hide()
+				}
 			})
 			return
 		}
@@ -1189,7 +1238,9 @@ func (w *SettingsWindow) onApplyClicked() {
 			}
 
 			// Close window on success
-			w.Hide()
+			if autoSaved {
+				w.Hide()
+			}
 		})
 	}()
 }
@@ -1494,7 +1545,12 @@ func (w *SettingsWindow) onAutostartToggled() {
 func (w *SettingsWindow) updateServiceStatus() {
 	status, err := w.serviceManager.GetStatus()
 	enabled, _ := w.serviceManager.IsEnabled()
+	w.applyServiceStatusWidgets(status, enabled, err)
+}
 
+// applyServiceStatusWidgets shows a service state read by updateServiceStatus
+// or by the periodic refresh (settings_auto.go).
+func (w *SettingsWindow) applyServiceStatusWidgets(status ServiceStatus, enabled bool, err error) {
 	// Update status label with colored bullet
 	markup := fmt.Sprintf("<span foreground='%s'>\u25CF</span> %s",
 		status.StatusColor(), status.String())
@@ -1515,6 +1571,8 @@ func (w *SettingsWindow) updateServiceStatus() {
 		w.autostartCheck.SetSensitive(true)
 	}
 	w.autostartUpdating = false
+	w.updateServiceButtons(status, err)
+	w.setAutoServiceStatus(status)
 }
 
 // showErrorDialog shows an error dialog with the given title and message.

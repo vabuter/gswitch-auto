@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/arumata/gswitch/internal/gswitch/ipc"
 )
 
 // Tray represents the system tray icon and menu.
@@ -19,6 +21,7 @@ type Tray struct {
 	// Menu items
 	mServiceStatus trayMenuItem
 	mServiceAction trayMenuItem
+	mAutoToggle    trayMenuItem // automatic correction (tray_auto.go)
 	mRefresh       trayMenuItem
 	mSettings      trayMenuItem
 	mQuit          trayMenuItem
@@ -50,6 +53,11 @@ type Tray struct {
 
 	// UI update queue to serialize tray API calls and state mutations.
 	uiOps chan func()
+
+	// Automatic correction state (tray_auto.go), owned by the UI queue.
+	autoCheckable    checkableTrayMenuItem // nil: title carries the state
+	autoStatus       ipc.ClientStatus
+	autoPersistError string
 }
 
 type serviceRequestKind int
@@ -110,6 +118,7 @@ func (t *Tray) onReady() {
 	t.mServiceStatus = t.backend.AddMenuItem(tr(strTrayServiceUnknown), tr(strMenuServiceHint))
 	t.mServiceStatus.Disable() // Status is display-only
 	t.mServiceAction = t.backend.AddMenuItem(tr(strButtonStop), tr(strMenuActionHint))
+	t.addAutoMenuItem()
 	t.backend.AddSeparator()
 
 	// Create menu items
@@ -223,6 +232,8 @@ func (t *Tray) handleEvents() {
 			}
 		case <-t.mServiceAction.Clicks():
 			t.requestServiceToggle()
+		case <-t.autoClicks():
+			t.handleAutoToggleClick()
 		case <-t.mRefresh.Clicks():
 			go t.app.RefreshDetectionStatus()
 		case <-t.mSettings.Clicks():
@@ -395,14 +406,14 @@ func (t *Tray) applyLayout(layout LayoutInfo) {
 			tooltip += " (" + t.detectionInfo.Source + ")"
 		}
 	}
-	t.backend.SetTooltip(tooltip)
+	t.backend.SetTooltip(tooltip + t.autoTooltipSuffix())
 }
 
 func (t *Tray) normalIcon() []byte {
 	if t.latestLayout == nil {
-		return GetNormalIcon(TrayIconModeApp, "")
+		return GetNormalIconAuto(TrayIconModeApp, "", t.autoBadgeOn())
 	}
-	return GetNormalIcon(t.iconMode, t.latestLayout.ShortCode)
+	return GetNormalIconAuto(t.iconMode, t.latestLayout.ShortCode, t.autoBadgeOn())
 }
 
 // UpdateIconMode queues a normal-icon redraw without bypassing tray UI serialization.
@@ -439,14 +450,14 @@ func (t *Tray) applyDetectionStatus(info DetectionInfo) {
 		case info.KeyNames != "" && info.Source != "":
 			tooltip := fmt.Sprintf(tr(strTooltipOK), info.KeyNames, info.Source)
 			t.backend.SetTitle(tooltip) // KDE shows Title as tooltip
-			t.backend.SetTooltip(tooltip)
+			t.backend.SetTooltip(tooltip + t.autoTooltipSuffix())
 		case info.KeyNames != "":
 			tooltip := "gswitch: " + info.KeyNames
 			t.backend.SetTitle(tooltip)
-			t.backend.SetTooltip(tooltip)
+			t.backend.SetTooltip(tooltip + t.autoTooltipSuffix())
 		default:
 			t.backend.SetTitle("gswitch")
-			t.backend.SetTooltip(fmt.Sprintf(tr(strAppTooltip), appVersion))
+			t.backend.SetTooltip(fmt.Sprintf(tr(strAppTooltip), appVersion) + t.autoTooltipSuffix())
 		}
 
 	case TrayStatusNeedsConfig:

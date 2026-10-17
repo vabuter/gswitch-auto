@@ -9,6 +9,7 @@ type recordingTrayBackend struct {
 	icon    []byte
 	titles  []string
 	tooltip string
+	items   []*recordingTrayMenuItem
 }
 
 func (*recordingTrayBackend) Run(onReady, onExit func()) error {
@@ -32,26 +33,39 @@ func (b *recordingTrayBackend) SetTooltip(tooltip string) {
 }
 
 //nolint:ireturn // The fake implements the production trayBackend contract.
-func (*recordingTrayBackend) AddMenuItem(string, string) trayMenuItem {
-	return &recordingTrayMenuItem{clicks: make(chan struct{})}
+func (b *recordingTrayBackend) AddMenuItem(title, tooltip string) trayMenuItem {
+	item := &recordingTrayMenuItem{clicks: make(chan struct{}), title: title, tooltip: tooltip, enabled: true}
+	b.items = append(b.items, item)
+	return item
 }
 
 func (*recordingTrayBackend) AddSeparator() {}
 
 type recordingTrayMenuItem struct {
-	clicks chan struct{}
+	clicks     chan struct{}
+	title      string
+	tooltip    string
+	enabled    bool
+	checked    bool
+	checkCalls int
 }
 
 func (m *recordingTrayMenuItem) Clicks() <-chan struct{} {
 	return m.clicks
 }
 
-func (*recordingTrayMenuItem) SetTitle(string)   {}
-func (*recordingTrayMenuItem) SetTooltip(string) {}
+func (m *recordingTrayMenuItem) SetTitle(title string)     { m.title = title }
+func (m *recordingTrayMenuItem) SetTooltip(tooltip string) { m.tooltip = tooltip }
 
-func (*recordingTrayMenuItem) Enable() {}
+func (m *recordingTrayMenuItem) Enable() { m.enabled = true }
 
-func (*recordingTrayMenuItem) Disable() {}
+func (m *recordingTrayMenuItem) Disable() { m.enabled = false }
+
+// SetChecked records check-mark updates (checkableTrayMenuItem).
+func (m *recordingTrayMenuItem) SetChecked(checked bool) {
+	m.checked = checked
+	m.checkCalls++
+}
 
 func TestTrayInitialAppearanceUsesStableTitle(t *testing.T) {
 	t.Parallel()
