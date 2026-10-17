@@ -140,6 +140,67 @@ func TestValidateHotkeys(t *testing.T) {
 	}
 }
 
+// TestHotkeyApplyMustValidate: a clash in chords the user did not change
+// (the default LShift+RShift toggle with grp:shifts_toggle, layout switch
+// [42,54]) must not block saving unrelated settings; a changed chord or a
+// changed layout switch / convert key is validated.
+func TestHotkeyApplyMustValidate(t *testing.T) {
+	gaTestUseLanguage(t, "en")
+	loaded := userconfig.DefaultSettings()
+	prev := &TrayConfig{LayoutSwitch: "42+54", ConvertKey: "0", Layout1: "us", Layout2: "ru"}
+	languageOnly := cloneTrayConfig(prev)
+	languageOnly.Layout2 = "ua"
+
+	// The scenario: the default toggle chord clashes with the layout switch.
+	if text := validateHotkeys(loaded.ToggleChord, loaded.SelectionChord, chordLayoutSwitchKeys(prev.LayoutSwitch, nil),
+		0, nil); !strings.Contains(text, tr(strGAChordConflictSwitch)) {
+		t.Fatalf("expected a layout switch clash, got %q", text)
+	}
+	if hotkeyApplyMustValidate(loaded, loaded.ToggleChord, loaded.SelectionChord, prev, languageOnly) {
+		t.Fatal("unchanged chords and layout switch block Apply")
+	}
+	if hotkeyApplyMustValidate(loaded, loaded.ToggleChord, loaded.SelectionChord, prev, nil) {
+		t.Fatal("unchanged chords block Apply without an upstream config")
+	}
+
+	changedToggle := userconfig.Chord{29, 97}
+	if !hotkeyApplyMustValidate(loaded, changedToggle, loaded.SelectionChord, prev, languageOnly) {
+		t.Fatal("changed toggle chord not validated")
+	}
+	if !hotkeyApplyMustValidate(loaded, loaded.ToggleChord, nil, prev, languageOnly) {
+		t.Fatal("disabled selection chord not validated")
+	}
+	newSwitch := cloneTrayConfig(prev)
+	newSwitch.LayoutSwitch = "56+42"
+	if !hotkeyApplyMustValidate(loaded, loaded.ToggleChord, loaded.SelectionChord, prev, newSwitch) {
+		t.Fatal("changed layout switch not validated")
+	}
+	newConvert := cloneTrayConfig(prev)
+	newConvert.ConvertKey = "54"
+	if !hotkeyApplyMustValidate(loaded, loaded.ToggleChord, loaded.SelectionChord, prev, newConvert) {
+		t.Fatal("changed convert key not validated")
+	}
+	if !hotkeyApplyMustValidate(loaded, loaded.ToggleChord, loaded.SelectionChord, nil, languageOnly) {
+		t.Fatal("unknown loaded upstream config not validated")
+	}
+}
+
+func TestChordClashText(t *testing.T) {
+	gaTestUseLanguage(t, "en")
+	if got := chordClashText(userconfig.Chord{42, 54}, []uint16{42, 54}, 0); got != tr(strGAChordConflictSwitch) {
+		t.Fatalf("layout switch clash = %q", got)
+	}
+	if got := chordClashText(userconfig.Chord{42, 97, 100}, []uint16{56, 42}, 97); got != tr(strGAChordConvertKey) {
+		t.Fatalf("convert key clash = %q", got)
+	}
+	if got := chordClashText(userconfig.Chord{42, 54}, []uint16{56, 42}, 0); got != "" {
+		t.Fatalf("no clash = %q", got)
+	}
+	if got := chordClashText(nil, []uint16{42, 54}, 42); got != "" {
+		t.Fatalf("disabled chord = %q", got)
+	}
+}
+
 func TestChordLayoutSwitchKeysUsesDetectionScancodes(t *testing.T) {
 	detected := &DetectionInfo{Status: TrayStatusOK, Scancodes: []uint16{56, 42}}
 	if got := chordLayoutSwitchKeys("auto", detected); !slices.Equal(got, []uint16{56, 42}) {

@@ -669,22 +669,11 @@ func (w *SettingsWindow) prepareAutoApply(cfg *TrayConfig) (*autoApplyPlan, erro
 		return &autoApplyPlan{skip: true}, nil
 	}
 	toggle, selection := w.hotkeyChords()
-	var detection *DetectionInfo
-	if w.lastDetectionResult != nil {
-		detection = w.lastDetectionResult
-	} else if w.app != nil {
-		w.app.mu.Lock()
-		info := w.app.detectionInfo
-		w.app.mu.Unlock()
-		detection = &info
-	}
-	layoutSwitch := ""
-	convertKey := ""
-	if cfg != nil {
-		layoutSwitch, convertKey = cfg.LayoutSwitch, cfg.ConvertKey
-	}
-	if text := validateHotkeys(toggle, selection, chordLayoutSwitchKeys(layoutSwitch, detection),
-		chordConvertKey(convertKey), a.accels); text != "" {
+	layoutSwitch, convertKey := w.hotkeyConstraints(cfg)
+	// A problem in unchanged chords does not block (the row shows it as a
+	// warning and the daemon disables such a chord at run time).
+	if text := validateHotkeys(toggle, selection, layoutSwitch, convertKey, a.accels); text != "" &&
+		hotkeyApplyMustValidate(a.loadedSettings, toggle, selection, w.loadedConfig, cfg) {
 		return nil, errors.New(text)
 	}
 	return planAutoApply(a.dir, a.loadedSettings, w.collectAutoSettings(),

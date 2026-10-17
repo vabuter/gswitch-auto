@@ -242,6 +242,63 @@ func chordConvertKey(value string) uint16 {
 	return uint16(code)
 }
 
+// chordClashText returns the row warning for a chord that contains every
+// layout switch key or the convert key (the daemon disables such a chord at
+// run time), or "".
+func chordClashText(c userconfig.Chord, layoutSwitch []uint16, convertKey uint16) string {
+	switch {
+	case len(c) == 0:
+		return ""
+	case len(layoutSwitch) > 0 && c.ContainsAll(layoutSwitch):
+		return tr(strGAChordConflictSwitch)
+	case convertKey != 0 && slices.Contains(c, convertKey):
+		return tr(strGAChordConvertKey)
+	default:
+		return ""
+	}
+}
+
+// hotkeyApplyMustValidate reports whether chord problems must stop Apply: a
+// chord was changed in the window, or this Apply changes the layout switch
+// or the convert key that the chords are checked against (prev is the
+// upstream configuration as loaded, next the one being applied). A problem
+// in unchanged chords, such as the default LShift+RShift toggle after the
+// user chose both Shift keys as the layout switch, is only a row warning: the
+// daemon already disables such a chord at run time, and refusing would block
+// saving every unrelated setting.
+func hotkeyApplyMustValidate(loaded userconfig.Settings, toggle, selection userconfig.Chord, prev, next *TrayConfig) bool {
+	if !toggle.Equal(loaded.ToggleChord) || !selection.Equal(loaded.SelectionChord) {
+		return true
+	}
+	if next == nil {
+		return false
+	}
+	return prev == nil || prev.LayoutSwitch != next.LayoutSwitch || prev.ConvertKey != next.ConvertKey
+}
+
+// hotkeyConstraints returns the layout switch keys and the convert key that
+// the chords must not contain: those of cfg (the Apply being validated) or,
+// with cfg == nil, of the current General-tab selection.
+func (w *SettingsWindow) hotkeyConstraints(cfg *TrayConfig) ([]uint16, uint16) {
+	var detection *DetectionInfo
+	if w.lastDetectionResult != nil {
+		detection = w.lastDetectionResult
+	} else if w.app != nil {
+		w.app.mu.Lock()
+		info := w.app.detectionInfo
+		w.app.mu.Unlock()
+		detection = &info
+	}
+	layoutSwitch, convertKey := "", ""
+	switch {
+	case cfg != nil:
+		layoutSwitch, convertKey = cfg.LayoutSwitch, cfg.ConvertKey
+	case w.layoutSwitchCombo != nil && w.convertKeyCombo != nil:
+		layoutSwitch, convertKey = w.getLayoutSwitchValueForWarning(), w.getConvertKeyValueForWarning()
+	}
+	return chordLayoutSwitchKeys(layoutSwitch, detection), chordConvertKey(convertKey)
+}
+
 // validateHotkeys checks both chords together (userconfig.ValidateChords)
 // and against the GNOME layout switch accelerators (ConflictAlways is an
 // error). It returns the UI text of every problem, or "".
@@ -384,7 +441,9 @@ func (w *SettingsWindow) setHotkeyChord(hr *hotkeyRow, chord userconfig.Chord) {
 	w.refreshHotkeyRow(hr)
 }
 
-// refreshHotkeyRow updates the keycap and the order warning of a row.
+// refreshHotkeyRow updates the keycap and the warning of a row: a GNOME
+// accelerator conflict, a clash with the layout switch or convert key of the
+// General tab, or the press-order warning.
 func (w *SettingsWindow) refreshHotkeyRow(hr *hotkeyRow) {
 	if hr.keycap != nil {
 		hr.keycap.SetText(chordDisplay(hr.chord))
@@ -393,6 +452,10 @@ func (w *SettingsWindow) refreshHotkeyRow(hr *hotkeyRow) {
 		return
 	}
 	errText, warnText := chordConflictText(hr.chord, w.auto.accels)
+	if errText == "" {
+		layoutSwitch, convertKey := w.hotkeyConstraints(nil)
+		errText = chordClashText(hr.chord, layoutSwitch, convertKey)
+	}
 	message := warnText
 	if errText != "" {
 		message = errText
