@@ -51,6 +51,10 @@ type Converter struct {
 
 	undoEligible bool
 	lastAction   Action
+
+	// gswitch-auto: incremented by every invalidateUndo, i.e. by text key
+	// downs, Backspace and ClearBuffer, never by shift pushes.
+	undoGen uint64
 }
 
 // NewConverter creates a new Converter
@@ -500,17 +504,6 @@ func (c *Converter) Convert(action Action) []KeyEvent {
 	}
 	c.log("convert: action=%s bufferLen=%d", actionName, len(c.buffer))
 
-	// Pre-allocate result slice with estimated capacity
-	result := make([]KeyEvent, 0, len(c.buffer)*3+len(c.LSKeys)*2)
-
-	// Switch layout
-	for _, key := range c.LSKeys {
-		result = append(result, KeyEvent{Code: key, Value: K_DOWN})
-	}
-	for i := len(c.LSKeys) - 1; i >= 0; i-- {
-		result = append(result, KeyEvent{Code: c.LSKeys[i], Value: K_UP})
-	}
-
 	startIndex := 0
 
 	// Find start of last word for ConvertWord
@@ -554,9 +547,35 @@ func (c *Converter) Convert(action Action) []KeyEvent {
 
 	c.log("convert: startIndex=%d (converting %d of %d buffer events)", startIndex, len(c.buffer)-startIndex, len(c.buffer))
 
+	return c.ConvertRange(startIndex, len(c.buffer))
+}
+
+// ConvertRange returns the events that switch the layout, erase every non-shift,
+// non-convert-key event in buffer[start:end) and replay that range. It returns nil only
+// when the bounds are invalid (start < 0, end > len(buffer), start >= end). It does NOT
+// check for text: a shift-only range yields the toggle plus the replayed shift events,
+// exactly as upstream. Convert(action) keeps the whole-buffer HasText() gate,
+// computes startIndex exactly as before, then returns c.ConvertRange(startIndex, len(c.buffer)).
+func (c *Converter) ConvertRange(start, end int) []KeyEvent {
+	if start < 0 || end > len(c.buffer) || start >= end {
+		c.log("convert: invalid range [%d,%d) of %d buffer events", start, end, len(c.buffer))
+		return nil
+	}
+
+	// Pre-allocate result slice with estimated capacity
+	result := make([]KeyEvent, 0, (end-start)*3+len(c.LSKeys)*2)
+
+	// Switch layout
+	for _, key := range c.LSKeys {
+		result = append(result, KeyEvent{Code: key, Value: K_DOWN})
+	}
+	for i := len(c.LSKeys) - 1; i >= 0; i-- {
+		result = append(result, KeyEvent{Code: c.LSKeys[i], Value: K_UP})
+	}
+
 	// Count and send backspaces for each key
 	backspaceCount := 0
-	for i := startIndex; i < len(c.buffer); i++ {
+	for i := start; i < end; i++ {
 		if !c.isShift(c.buffer[i].Code) && !c.isConvKey(c.buffer[i].Code) {
 			backspaceCount++
 			result = append(result,
@@ -567,7 +586,7 @@ func (c *Converter) Convert(action Action) []KeyEvent {
 	c.log("convert: backspaces=%d", backspaceCount)
 
 	replayCount := 0
-	for i := startIndex; i < len(c.buffer); i++ {
+	for i := start; i < end; i++ {
 		if c.isConvKey(c.buffer[i].Code) {
 			continue
 		}
@@ -577,7 +596,7 @@ func (c *Converter) Convert(action Action) []KeyEvent {
 
 	// Replay the buffer
 	shiftDown := make(map[uint16]bool, 2)
-	for i := startIndex; i < len(c.buffer); i++ {
+	for i := start; i < end; i++ {
 		if c.isConvKey(c.buffer[i].Code) {
 			continue
 		}
@@ -638,6 +657,14 @@ func (c *Converter) CompleteConversion(action Action) bool {
 func (c *Converter) invalidateUndo() {
 	c.lastAction = ActionNone
 	c.undoEligible = false
+	c.undoGen++
+}
+
+// UndoGeneration returns a counter that changes whenever content input
+// (text key down, Backspace) or ClearBuffer invalidates the one-step undo.
+// Shift pushes leave it unchanged. gswitch-auto keys its own undo on it.
+func (c *Converter) UndoGeneration() uint64 {
+	return c.undoGen
 }
 
 // GetBuffer returns a copy of the current buffer

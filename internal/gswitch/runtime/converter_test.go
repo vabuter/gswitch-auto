@@ -788,3 +788,110 @@ var emitTestConvertGolden = map[string]string{
 	"trailing-space/process=-/none":           "125+ 125- 14+ 14- 14+ 14- 14+ 14- 30+ 30- 48+ 48- 57+ 57-",
 	"trailing-space/process=-/word":           "125+ 125- 14+ 14- 14+ 14- 14+ 14- 30+ 30- 48+ 48- 57+ 57-",
 }
+
+func emitTestConverter(t *testing.T, script string) *Converter {
+	t.Helper()
+	c := NewConverter()
+	c.LSKeys = []uint16{125}
+	for _, ev := range emitTestSeq(t, script) {
+		c.Push(ev.Code, ev.Value)
+	}
+	return c
+}
+
+func TestConverterConvertRangeInvalidBounds(t *testing.T) {
+	c := emitTestConverter(t, "a b c")
+	for _, r := range [][2]int{{-1, 2}, {0, 4}, {2, 2}, {3, 1}, {3, 3}, {-1, -1}, {4, 5}} {
+		if got := c.ConvertRange(r[0], r[1]); got != nil {
+			t.Errorf("ConvertRange(%d, %d) = %s, want nil", r[0], r[1], emitTestFormat(got))
+		}
+	}
+	if got := NewConverter().ConvertRange(0, 0); got != nil {
+		t.Errorf("ConvertRange(0, 0) on an empty buffer = %s, want nil", emitTestFormat(got))
+	}
+}
+
+func TestConverterConvertRangeShiftOnlyRange(t *testing.T) {
+	c := emitTestConverter(t, "a ls+ sp ls-")
+	if got, want := emitTestFormat(c.ConvertRange(3, 4)), "125+ 125- 42-"; got != want {
+		t.Errorf("ConvertRange(3, 4) = %s, want %s (toggle plus the replayed shift release)", got, want)
+	}
+	if got, want := emitTestFormat(c.ConvertRange(1, 2)), "125+ 125- 42+ 42-"; got != want {
+		t.Errorf("ConvertRange(1, 2) = %s, want %s (toggle, shift, extra release)", got, want)
+	}
+}
+
+func TestConverterConvertWordShiftOnlyTailUsesConvertRange(t *testing.T) {
+	c := emitTestConverter(t, "a ls+ sp ls- ls+ ls- ls+ ls-")
+	if action := c.Process(); action != ActionConvertWord {
+		t.Fatalf("Process() = %v, want ActionConvertWord", action)
+	}
+	if got := emitTestFormat(c.GetBuffer()); got != "30+ 42+ 57+ 42-" {
+		t.Fatalf("trimmed buffer = %s", got)
+	}
+	word := c.Convert(ActionConvertWord)
+	if !reflect.DeepEqual(word, c.ConvertRange(3, 4)) {
+		t.Fatalf("Convert(word) = %s, want ConvertRange(3, 4) = %s",
+			emitTestFormat(word), emitTestFormat(c.ConvertRange(3, 4)))
+	}
+}
+
+func TestConverterConvertRangeWordWithTrailingSpace(t *testing.T) {
+	c := emitTestConverter(t, "a b sp ls+ c ls- d sp")
+	got := emitTestFormat(c.ConvertRange(3, 8))
+	want := "125+ 125- 14+ 14- 14+ 14- 14+ 14- 42+ 46+ 46- 42- 32+ 32- 57+ 57-"
+	if got != want {
+		t.Errorf("ConvertRange(3, 8) = %s, want %s", got, want)
+	}
+	if all := c.ConvertRange(0, c.BufferLen()); !reflect.DeepEqual(all, c.Convert(ActionConvertAll)) {
+		t.Errorf("ConvertRange(0, len) = %s, want Convert(all) = %s",
+			emitTestFormat(all), emitTestFormat(c.Convert(ActionConvertAll)))
+	}
+}
+
+func TestConverterUndoGeneration(t *testing.T) {
+	c := NewConverter()
+	c.ConvKey = testKeyPause
+	c.LSKeys = []uint16{125}
+	gen := c.UndoGeneration()
+	step := func(name string, bump bool, fn func()) {
+		t.Helper()
+		fn()
+		got := c.UndoGeneration()
+		switch {
+		case bump && got == gen:
+			t.Errorf("%s: UndoGeneration stayed %d, want a bump", name, got)
+		case !bump && got != gen:
+			t.Errorf("%s: UndoGeneration changed %d -> %d, want unchanged", name, gen, got)
+		}
+		gen = got
+	}
+	push := func(script string) func() {
+		return func() {
+			for _, ev := range emitTestSeq(t, script) {
+				c.Push(ev.Code, ev.Value)
+			}
+		}
+	}
+
+	step("text key down", true, push("a+"))
+	step("text key up", false, push("a-"))
+	step("text key repeat", false, push("a~"))
+	step("left shift down/up", false, push("ls+ ls-"))
+	step("right shift down/up", false, push("rs+ rs-"))
+	step("shift repeat", false, push("ls~"))
+	step("convert key", false, push("pause+ pause-"))
+	step("Convert", false, func() { c.Convert(ActionConvertWord) })
+	step("ConvertRange", false, func() { c.ConvertRange(0, c.BufferLen()) })
+	step("Process", false, func() { c.Process() })
+	step("second text key", true, push("b+"))
+	step("backspace down", true, push("bs+"))
+	step("backspace repeat", true, push("bs~"))
+	step("backspace up", false, push("bs-"))
+	step("arm undo", false, func() { c.CompleteConversion(ActionConvertWord) })
+	step("consume undo", true, func() { c.CompleteConversion(ActionConvertWord) })
+	step("ClearBuffer", true, c.ClearBuffer)
+	step("killer key", true, push("tab+"))
+	step("killer key up (upstream clears on release too)", true, push("tab-"))
+	step("Ctrl is not a killer", false, push("ctrl+ ctrl-"))
+}
