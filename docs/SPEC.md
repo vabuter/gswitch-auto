@@ -843,6 +843,7 @@ type State struct {
 	AppID, WmClass string // raw, as reported by the extension (IPC/debug display only)
 	AppKey, WmClassKey string // fold.AppKey(AppID), fold.AppKey(WmClass); set by the client on every change
 	Purpose       Purpose
+	FocusUnknown  bool   // available, but GetFocus failed; cleared by a GetFocus retry or FocusChanged
 	Locked        bool
 	LockReason    string // "extension-locked" | "extension-vanished" | "screensaver" | ""
 	Seq           uint64 // bumps on every change
@@ -886,10 +887,15 @@ LockReason="extension-locked"`; name vanishes without a preceding `Disabling` wh
 `Disabling("disabled")` ⇒ `Available=false`, not locked; name reappears ⇒ `Locked=false`
 (unless the ScreenSaver still says active). ScreenSaver `ActiveChanged(true)` ⇒ `Locked=true,
 "screensaver"` (late ~0.85 s, best effort); `ActiveChanged(false)` clears only a screensaver
-lock. Every call uses `CallWithContext` with `CallTimeout`.
+lock. Every call uses `CallWithContext` with `CallTimeout`. When `GetFocus` fails as the name
+appears (e.g. the Shell is busy with the unlock and the focused window did not change, so no
+`FocusChanged` follows), the state is published with `FocusUnknown=true` and the client retries
+`GetFocus` on its goroutine with a 250 ms..5 s backoff until it succeeds, a `FocusChanged` arrives
+or the name vanishes.
 
 `Policy.Allow` order: Locked && SkipWhenLocked ⇒ deny "locked"; !Available ⇒ RequireExtension ?
-deny "focus-unavailable" : allow; purpose password|pin && SkipPassword ⇒ deny "password-field";
+deny "focus-unavailable" : allow; FocusUnknown ⇒ deny "focus-unknown" (fail closed while the
+extension is up but the focus could not be read); purpose password|pin && SkipPassword ⇒ deny "password-field";
 purpose terminal && SkipTerminal ⇒ deny "terminal"; `Excluded != nil &&
 Excluded.MatchApp(st.AppKey, st.WmClassKey)` ⇒ deny "excluded-app". Allocation-free (keys are
 pre-normalised by the client, and `fold.AppKey` on normalised input does not allocate).

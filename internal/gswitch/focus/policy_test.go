@@ -93,6 +93,9 @@ func TestPolicyAllow(t *testing.T) {
 	emptyApp := focusTestState("", "", PurposeNormal)
 	windowBacked := focusTestState("window:12", "Foo-Bar", PurposeNormal)
 	files := focusTestState("org.gnome.Nautilus.desktop", "org.gnome.Nautilus", PurposeNormal)
+	unknownFocus := State{Available: true, EverAvailable: true, Purpose: PurposeUnknown, FocusUnknown: true}
+	lockedUnknown := unknownFocus
+	lockedUnknown.Locked, lockedUnknown.LockReason = true, LockReasonScreenSaver
 
 	defaults := focusTestDefaultPolicy(nil)
 	permissive := Policy{}
@@ -129,6 +132,11 @@ func TestPolicyAllow(t *testing.T) {
 		{"not excluded", excluded, files, true, ""},
 		{"terminal checked before exclusions", excluded, terminal, false, ReasonTerminal},
 		{"nil Excluded allows", defaults, windowBacked, true, ""},
+		// GetFocus failed after the extension appeared: fail closed until the
+		// focus is known (the app could be excluded, the field a password).
+		{"unknown focus denies", excluded, unknownFocus, false, ReasonFocusUnknown},
+		{"unknown focus denies with a permissive policy", permissive, unknownFocus, false, ReasonFocusUnknown},
+		{"lock checked before unknown focus", defaults, lockedUnknown, false, ReasonLocked},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

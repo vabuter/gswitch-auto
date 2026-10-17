@@ -508,18 +508,59 @@ func TestClientGetFocusTimeout(t *testing.T) {
 		t.Fatalf("Start blocked for %v", elapsed)
 	}
 	st := focusTestWaitFor(t, c, "available after GetFocus timeout", func(st State) bool { return st.Available })
-	if st.AppID != "" || st.Purpose != PurposeUnknown {
-		t.Fatalf("state after GetFocus timeout = %+v", st)
+	if st.AppID != "" || st.Purpose != PurposeUnknown || !st.FocusUnknown {
+		t.Fatalf("state after GetFocus timeout = %+v, want FocusUnknown", st)
 	}
 
-	// The client still follows signals after the failed call.
+	// The client still follows signals after the failed call, and a
+	// FocusChanged resolves the unknown focus.
 	ext.emit(t, "FocusChanged", "b.desktop", "B")
-	focusTestWaitFor(t, c, "focus after timeout", func(st State) bool { return st.AppID == "b.desktop" })
+	st = focusTestWaitFor(t, c, "focus after timeout", func(st State) bool { return st.AppID == "b.desktop" })
+	if st.FocusUnknown {
+		t.Fatalf("FocusChanged left FocusUnknown set: %+v", st)
+	}
 
 	start = time.Now()
 	c.Close()
 	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Fatalf("Close took %v", elapsed)
+	}
+}
+
+// TestClientGetFocusRetry: when GetFocus fails as the extension appears (the
+// Shell is busy with the unlock) and no FocusChanged follows, the client
+// reports FocusUnknown (the policy denies) and retries until the read works,
+// instead of publishing an available extension with an empty application.
+func TestClientGetFocusRetry(t *testing.T) {
+	addr, _ := focusTestBus(t)
+	block := make(chan struct{})
+	var unblock sync.Once
+	release := func() { unblock.Do(func() { close(block) }) }
+	t.Cleanup(release)
+	ext := focusTestNewExtension(t, addr, "org.keepassxc.KeePassXC.desktop", "KeePassXC", "normal",
+		func(f *focusTestExtension) { f.block = block })
+	focusTestOwn(t, ext.conn, BusName)
+
+	c := focusTestStartClient(t, addr, nil, 100*time.Millisecond)
+	st := focusTestWaitFor(t, c, "available with unknown focus", func(st State) bool { return st.Available })
+	if !st.FocusUnknown || st.AppID != "" {
+		t.Fatalf("state after a failed GetFocus = %+v, want FocusUnknown", st)
+	}
+	policy := Policy{Excluded: &focusTestMatcher{patterns: []string{"org.keepassxc.keepassxc"}}}
+	if ok, reason := policy.Allow(st); ok || reason != ReasonFocusUnknown {
+		t.Fatalf("Allow(unknown focus) = %v, %q; want denied %q", ok, reason, ReasonFocusUnknown)
+	}
+
+	ext.mu.Lock()
+	ext.block = nil
+	ext.mu.Unlock()
+	release()
+	st = focusTestWaitFor(t, c, "focus re-read", func(st State) bool { return !st.FocusUnknown })
+	if !st.Available || st.AppKey != "org.keepassxc.keepassxc" || st.Purpose != PurposeNormal {
+		t.Fatalf("state after the retry = %+v", st)
+	}
+	if ok, reason := policy.Allow(st); ok || reason != ReasonExcludedApp {
+		t.Fatalf("Allow(after retry) = %v, %q; want denied %q", ok, reason, ReasonExcludedApp)
 	}
 }
 

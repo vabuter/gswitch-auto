@@ -65,10 +65,14 @@ type State struct {
 	// the client sets them on every change.
 	AppKey, WmClassKey string
 	Purpose            Purpose
-	Locked             bool
-	LockReason         string // "extension-locked" | "extension-vanished" | "screensaver" | ""
-	Seq                uint64 // bumps on every change
-	UpdatedAt          time.Time
+	// FocusUnknown: the extension is available but GetFocus failed, so the
+	// focused application and field purpose are not known. Policy.Allow
+	// denies until a GetFocus retry or a FocusChanged signal succeeds.
+	FocusUnknown bool
+	Locked       bool
+	LockReason   string // "extension-locked" | "extension-vanished" | "screensaver" | ""
+	Seq          uint64 // bumps on every change
+	UpdatedAt    time.Time
 }
 
 // App is one running application as listed by the extension: the Shell.App

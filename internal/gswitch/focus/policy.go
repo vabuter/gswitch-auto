@@ -22,6 +22,7 @@ type Policy struct {
 const (
 	ReasonLocked           = "locked"
 	ReasonFocusUnavailable = "focus-unavailable"
+	ReasonFocusUnknown     = "focus-unknown"
 	ReasonPasswordField    = "password-field"
 	ReasonTerminal         = "terminal"
 	ReasonExcludedApp      = "excluded-app"
@@ -29,8 +30,9 @@ const (
 
 // Allow reports whether automatic correction may act for st and, when it may
 // not, the reason. The rules apply in order: lock, extension availability
-// (fail-open unless RequireExtension), password/PIN field, terminal field,
-// excluded application. The matcher receives the pre-normalised AppKey and
+// (fail-open unless RequireExtension), unknown focus while the extension is
+// available (fail closed: the application and field could be excluded),
+// password/PIN field, terminal field, excluded application. The matcher receives the pre-normalised AppKey and
 // WmClassKey, so Allow itself does not allocate.
 func (p Policy) Allow(st State) (ok bool, reason string) {
 	if st.Locked && p.SkipWhenLocked {
@@ -41,6 +43,9 @@ func (p Policy) Allow(st State) (ok bool, reason string) {
 			return false, ReasonFocusUnavailable
 		}
 		return true, ""
+	}
+	if st.FocusUnknown {
+		return false, ReasonFocusUnknown
 	}
 	if (st.Purpose == PurposePassword || st.Purpose == PurposePIN) && p.SkipPassword {
 		return false, ReasonPasswordField

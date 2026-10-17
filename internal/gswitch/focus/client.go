@@ -17,6 +17,11 @@ const (
 	clientRetryMin     = time.Second
 	clientRetryMax     = 30 * time.Second
 	clientCloseTimeout = time.Second
+	// clientFocusRetryMin and clientFocusRetryMax bound the backoff of the
+	// GetFocus retry after a failed read (for example a Shell main loop busy
+	// with the unlock animation when the extension reappears).
+	clientFocusRetryMin = 250 * time.Millisecond
+	clientFocusRetryMax = 5 * time.Second
 	// clientSignalBuffer keeps godbus from falling back to its unordered
 	// deferred delivery (one goroutine per signal) during short bursts: the
 	// order of Disabling and NameOwnerChanged matters for the lock state.
@@ -64,6 +69,8 @@ type Client struct {
 	// Owned by the client goroutine.
 	disabling         string // reason of a Disabling signal not yet followed by the vanish
 	screenSaverActive bool
+	focusRetry        *time.Timer // pending GetFocus retry (State.FocusUnknown); nil: none
+	focusRetryDelay   time.Duration
 }
 
 // New returns a client that does nothing until Start.
@@ -184,6 +191,7 @@ func (c *Client) session(ctx context.Context, conn *dbus.Conn) (established bool
 	ch := make(chan *dbus.Signal, clientSignalBuffer)
 	conn.Signal(ch)
 	defer conn.RemoveSignal(ch)
+	defer c.stopFocusRetry()
 
 	// Matches go in before the initial NameHasOwner/GetFocus/GetActive calls
 	// so that no transition between the query and the subscription is lost.
@@ -194,6 +202,10 @@ func (c *Client) session(ctx context.Context, conn *dbus.Conn) (established bool
 	c.refreshScreenSaver(ctx, conn)
 
 	for {
+		var retry <-chan time.Time
+		if c.focusRetry != nil {
+			retry = c.focusRetry.C
+		}
 		select {
 		case <-ctx.Done():
 			return true, nil
@@ -202,6 +214,9 @@ func (c *Client) session(ctx context.Context, conn *dbus.Conn) (established bool
 				return true, errConnectionClosed
 			}
 			c.handleSignal(ctx, conn, sig)
+		case <-retry:
+			c.focusRetry = nil
+			c.retryFocus(ctx, conn)
 		}
 	}
 }
@@ -308,7 +323,10 @@ func (c *Client) handleSignal(ctx context.Context, conn *dbus.Conn, sig *dbus.Si
 
 // onAppeared handles the extension name being owned (at start or later):
 // the extension's own lock is lifted unless the screen saver still reports
-// the session as locked, and the focus is re-read.
+// the session as locked, and the focus is re-read. When GetFocus fails the
+// state is published with FocusUnknown (the policy denies) and the read is
+// retried with a backoff, because the extension emits no FocusChanged when
+// the focused window did not change (e.g. across a screen lock).
 func (c *Client) onAppeared(ctx context.Context, conn *dbus.Conn) {
 	st := c.Snapshot()
 	st.Available = true
@@ -321,6 +339,16 @@ func (c *Client) onAppeared(ctx context.Context, conn *dbus.Conn) {
 		}
 	}
 
+	c.stopFocusRetry()
+	if !c.readFocus(ctx, conn, &st) {
+		c.scheduleFocusRetry(clientFocusRetryMin)
+	}
+	c.commit(st, false)
+}
+
+// readFocus calls GetFocus and stores the result in st. On failure st keeps
+// its application and purpose and is marked FocusUnknown.
+func (c *Client) readFocus(ctx context.Context, conn *dbus.Conn, st *State) bool {
 	callCtx, cancel := c.callContext(ctx)
 	defer cancel()
 	var appID, wmClass, purpose string
@@ -329,21 +357,52 @@ func (c *Client) onAppeared(ctx context.Context, conn *dbus.Conn) {
 		Store(&appID, &wmClass, &purpose)
 	if err != nil {
 		c.logf("focus: GetFocus: %v", err)
-	} else {
-		setApp(&st, appID, wmClass)
-		st.Purpose = knownPurpose(purpose)
+		st.FocusUnknown = true
+		return false
+	}
+	setApp(st, appID, wmClass)
+	st.Purpose = knownPurpose(purpose)
+	st.FocusUnknown = false
+	return true
+}
+
+// retryFocus re-reads the focus after a failed GetFocus while the extension
+// is still available and nothing else has resolved the focus meanwhile.
+func (c *Client) retryFocus(ctx context.Context, conn *dbus.Conn) {
+	st := c.Snapshot()
+	if !st.Available || !st.FocusUnknown {
+		return
+	}
+	if !c.readFocus(ctx, conn, &st) {
+		c.scheduleFocusRetry(min(c.focusRetryDelay*2, clientFocusRetryMax))
+		return
 	}
 	c.commit(st, false)
+}
+
+func (c *Client) scheduleFocusRetry(delay time.Duration) {
+	c.stopFocusRetry()
+	c.focusRetryDelay = delay
+	c.focusRetry = time.NewTimer(delay)
+}
+
+func (c *Client) stopFocusRetry() {
+	if c.focusRetry != nil {
+		c.focusRetry.Stop()
+		c.focusRetry = nil
+	}
 }
 
 // onVanished handles the extension name losing its owner. Without a
 // preceding Disabling the reason is unknown and the state fails closed
 // (C7): the Shell disables the extension when the screen locks.
 func (c *Client) onVanished() {
+	c.stopFocusRetry()
 	st := c.Snapshot()
 	st.Available = false
 	setApp(&st, "", "")
 	st.Purpose = PurposeUnknown
+	st.FocusUnknown = false
 	switch c.disabling {
 	case disablingReasonLocked:
 		st.Locked, st.LockReason = true, LockReasonExtensionLocked
@@ -365,18 +424,24 @@ func (c *Client) onDisabling(reason string) {
 		st.Locked, st.LockReason = true, LockReasonExtensionLocked
 	} else {
 		c.disabling = disablingReasonGeneric
+		c.stopFocusRetry()
 		st.Available = false
 		setApp(&st, "", "")
 		st.Purpose = PurposeUnknown
+		st.FocusUnknown = false
 	}
 	c.commit(st, false)
 }
 
 // onFocus handles FocusChanged. Every signal is a focus-window change (also
-// within one application), so the sequence number always moves.
+// within one application), so the sequence number always moves. It resolves
+// an unknown focus: the extension reports the purpose of the new window's
+// field separately (InputPurposeChanged).
 func (c *Client) onFocus(appID, wmClass string) {
+	c.stopFocusRetry()
 	st := c.Snapshot()
 	setApp(&st, appID, wmClass)
+	st.FocusUnknown = false
 	c.commit(st, true)
 }
 
@@ -404,10 +469,12 @@ func (c *Client) onScreenSaver(active bool) {
 // lost; the next session re-reads it.
 func (c *Client) onDisconnected() {
 	c.disabling = ""
+	c.stopFocusRetry()
 	st := c.Snapshot()
 	st.Available = false
 	setApp(&st, "", "")
 	st.Purpose = PurposeUnknown
+	st.FocusUnknown = false
 	c.commit(st, false)
 }
 
