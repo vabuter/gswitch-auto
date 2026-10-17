@@ -3,6 +3,7 @@ package userconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -129,6 +130,35 @@ func TestLoadParseErrorsKeepListsNonNil(t *testing.T) {
 	}
 	if len(c.Warnings) != 4 {
 		t.Fatalf("warnings = %q, want 4", c.Warnings)
+	}
+}
+
+// TestRejectedWordEntryNotInWarnings: warnings reach the journal and the
+// ConfigWarnings D-Bus property whatever ipc-expose-words says, so a
+// rejected exception word is reported by file and line only. App entries
+// (application ids, not typed text) keep the entry for the user.
+func TestRejectedWordEntryNotInWarnings(t *testing.T) {
+	dir := ucTestDir(t)
+	ucTestWrite(t, dir, WordsName, "ghbdtn\nmy secret phrase\n")
+	ucTestWrite(t, dir, AppsName, "window:12\n")
+	c := ucTestLoad(t, dir)
+	if c.Words.Len() != 1 {
+		t.Fatalf("words = %q", c.Words.Entries())
+	}
+	var wordWarning, appWarning string
+	for _, w := range c.Warnings {
+		switch {
+		case strings.HasPrefix(w, WordsName+":2:"):
+			wordWarning = w
+		case strings.HasPrefix(w, AppsName+":1:"):
+			appWarning = w
+		}
+	}
+	if wordWarning == "" || strings.Contains(wordWarning, "secret") || strings.Contains(wordWarning, "phrase") {
+		t.Fatalf("word warning = %q (warnings %q), want line number without the entry", wordWarning, c.Warnings)
+	}
+	if !strings.Contains(appWarning, `"window:12"`) {
+		t.Fatalf("app warning = %q, want the rejected entry", appWarning)
 	}
 }
 

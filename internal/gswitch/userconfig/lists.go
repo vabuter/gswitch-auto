@@ -183,12 +183,16 @@ type listSpec struct {
 	name      string
 	normalize func(string) (string, bool)
 	globs     bool
+	// private: entries are typed words, which must not reach the journal or
+	// the session bus (ConfigWarnings) through a warning; a rejected entry is
+	// reported by line number only.
+	private bool
 }
 
 func listSpecFor(name string) (listSpec, error) {
 	switch name {
 	case WordsName:
-		return listSpec{name: WordsName, normalize: NormalizeWord}, nil
+		return listSpec{name: WordsName, normalize: NormalizeWord, private: true}, nil
 	case AppsName:
 		return listSpec{name: AppsName, normalize: NormalizeApp, globs: true}, nil
 	default:
@@ -219,7 +223,13 @@ func parseList(spec listSpec, text string) (*ListSet, []string) {
 		}
 		entry, valid := spec.normalize(raw)
 		if !valid {
-			warnings = append(warnings, fmt.Sprintf("%s:%d: entry %q rejected", spec.name, i+1, raw))
+			if spec.private {
+				warnings = append(warnings, fmt.Sprintf(
+					"%s:%d: entry rejected (one word of at most %d letters, no white space or control characters)",
+					spec.name, i+1, MaxWordRunes))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%s:%d: entry %q rejected", spec.name, i+1, raw))
+			}
 			continue
 		}
 		if _, dup := l.entries[entry]; dup {

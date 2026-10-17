@@ -72,8 +72,9 @@ func TestWordListParsing(t *testing.T) {
 	if got := c.Words.Entries(); !slices.Equal(got, want) {
 		t.Fatalf("entries = %q, want %q", got, want)
 	}
-	if !ucTestHasWarning(c.Warnings, WordsName+":6:", "two words") {
-		t.Fatalf("no warning for inner whitespace in %q", c.Warnings)
+	// Warnings name the line, never the rejected word (journal, D-Bus).
+	if !ucTestHasWarning(c.Warnings, WordsName+":6:", "rejected") || ucTestHasWarning(c.Warnings, "two words") {
+		t.Fatalf("no warning for inner whitespace, or one quoting the entry, in %q", c.Warnings)
 	}
 	if !ucTestHasWarning(c.Warnings, WordsName+":7:") {
 		t.Fatalf("no warning for the 65-rune word in %q", c.Warnings)
