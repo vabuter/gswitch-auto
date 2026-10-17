@@ -1262,7 +1262,11 @@ words only when `LogWords`. Syslog gets counters and reasons only (upstream neve
 `GetCurrentLayouts(nil)`), `LoadLayout` both, reverse-maps text to `(code, shift)` events via
 the shown layout's KeyMap, appends Space, runs `lastWordRange`/`renderWord`/`Decide` with the
 user config's detector options and exceptions, prints JSON `{shown, alt, active, verdict, reason,
-shown_cost, alt_cost, shown_known, alt_known}`; exit 2 when unrenderable. No root, no devices.
+engine, shown_cost, alt_cost, shown_known, alt_known}`; exit 2 when unrenderable. `verdict`/`reason`
+are always the detector's for a rendered word (`Decide` also runs when an engine veto would stop
+the word); `skip` only when the detector cannot run (`lastWordRange` reason, `unrenderable`).
+`engine` is the OnSpace outcome: `arm`, or the skip reason code it would log (`lexical:digit`,
+`shift-shape`, `edge-shown-known`, `detector:<reason>`, …). No root, no devices.
 
 ### 3.9 IPC (WP6): `internal/gswitch/ipc`
 
@@ -2254,8 +2258,8 @@ the expected observation. Use gnome-text-editor (or gedit) as the test field unl
 - **M3 Layout tracker.** `gswitch --layout-state` ⇒ socket path, address, pid, `xkb:us::eng` → 0;
   press Alt+Shift during the watch ⇒ `xkb:ru::rus` → 1 within tens of ms.
 - **M4 Detector.** `gswitch --auto-check ghbdtn --shown us` ⇒ verdict fix, alt `привет`;
-  `--auto-check hello` ⇒ keep; `--auto-check ghb2` ⇒ not-candidate; `--auto-check руддщ --shown ru`
-  ⇒ fix, alt `hello`.
+  `--auto-check hello` ⇒ keep; `--auto-check ghb2` ⇒ not-candidate (engine `lexical:digit`);
+  `--auto-check руддщ --shown ru` ⇒ fix, alt `hello`.
 - **M5 Toggle (R2).** Tray running. Press LShift+RShift together and release. Expect tray
   checkbox/badge on, within ~1 s `grep auto-enabled ~/.config/gswitch/auto.conf` ⇒ `true`
   (written by the tray), `busctl --user get-property io.github.vabuter.GswitchAuto

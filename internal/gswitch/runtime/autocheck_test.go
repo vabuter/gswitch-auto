@@ -89,25 +89,32 @@ func TestRunAutoCheck(t *testing.T) {
 		args                 []string
 		shown, alt, active   string
 		verdict, reason      string
+		engine               string
 		code                 int
 		scored               bool
 		shownCost, altCost   float64
 		shownKnown, altKnown bool
 	}{
-		{args: []string{"ghbdtn"}, shown: "ghbdtn", alt: "привет", active: "us", verdict: "fix", reason: "scores",
+		{args: []string{"ghbdtn"}, shown: "ghbdtn", alt: "привет", active: "us", verdict: "fix", reason: "scores", engine: "arm",
 			scored: true, shownCost: 7.6142857, altCost: 2.8428571, altKnown: true},
-		{args: []string{"руддщ"}, shown: "руддщ", alt: "hello", active: "ru", verdict: "fix", reason: "scores", scored: true},
-		{args: []string{"--shown=us", "hello"}, shown: "hello", alt: "руддщ", active: "us", verdict: "keep", reason: "shown-known", scored: true},
-		{args: []string{"ok", "ghbdtn?"}, shown: "ghbdtn?", alt: "привет,", active: "us", verdict: "fix", reason: "scores", scored: true},
-		{args: []string{"jy"}, shown: "jy", alt: "он", active: "us", verdict: "fix", reason: "short-list"},
-		{args: []string{"GTK"}, shown: "GTK", alt: "ПЕЛ", active: "us", verdict: "skip", reason: "shift-shape", scored: true},
-		{args: []string{"--", "-elm"}, shown: "-elm", alt: "-удь", active: "us", verdict: "skip", reason: "lexical:leading-dash", scored: true},
-		{args: []string{"g1"}, shown: "g1", alt: "п1", active: "us", verdict: "skip", reason: "lexical:digit"},
-		{args: []string{"a"}, shown: "a", alt: "ф", active: "us", verdict: "skip", reason: "too-short"},
-		{args: []string{"it."}, shown: "it.", alt: "шею", active: "us", verdict: "skip", reason: "edge-shown-known", scored: true},
-		{args: []string{"vj."}, shown: "vj.", alt: "мою", active: "us", verdict: "fix", reason: "scores", scored: true},
-		{args: []string{"dc."}, shown: "dc.", alt: "всю", active: "us", verdict: "fix", reason: "scores", scored: true},
-		{args: []string{"--shown", "ru", "ghbdtn"}, shown: "ghbdtn", active: "ru", verdict: "skip", reason: "unrenderable", code: 2},
+		{args: []string{"руддщ"}, shown: "руддщ", alt: "hello", active: "ru", verdict: "fix", reason: "scores", engine: "arm", scored: true},
+		{args: []string{"--shown=us", "hello"}, shown: "hello", alt: "руддщ", active: "us", verdict: "keep", reason: "shown-known",
+			engine: "detector:shown-known", scored: true},
+		{args: []string{"ok", "ghbdtn?"}, shown: "ghbdtn?", alt: "привет,", active: "us", verdict: "fix", reason: "scores", engine: "arm", scored: true},
+		{args: []string{"jy"}, shown: "jy", alt: "он", active: "us", verdict: "fix", reason: "short-list", engine: "arm"},
+		// Engine vetoes: verdict and reason stay the detector's (SPEC 3.8,
+		// manual test M4), engine names the veto.
+		{args: []string{"GTK"}, shown: "GTK", alt: "ПЕЛ", active: "us", verdict: "keep", reason: "exception", engine: "shift-shape", scored: true},
+		{args: []string{"--", "-elm"}, shown: "-elm", alt: "-удь", active: "us", verdict: "keep", reason: "shown-known",
+			engine: "lexical:leading-dash", scored: true},
+		{args: []string{"g1"}, shown: "g1", alt: "п1", active: "us", verdict: "not-candidate", reason: "digits", engine: "lexical:digit"},
+		{args: []string{"ghb2"}, shown: "ghb2", alt: "при2", active: "us", verdict: "not-candidate", reason: "digits", engine: "lexical:digit"},
+		{args: []string{"a"}, shown: "a", alt: "ф", active: "us", verdict: "skip", reason: "too-short", engine: "too-short"},
+		{args: []string{"it."}, shown: "it.", alt: "шею", active: "us", verdict: "fix", reason: "scores", engine: "edge-shown-known", scored: true},
+		{args: []string{"vj."}, shown: "vj.", alt: "мою", active: "us", verdict: "fix", reason: "scores", engine: "arm", scored: true},
+		{args: []string{"dc."}, shown: "dc.", alt: "всю", active: "us", verdict: "fix", reason: "scores", engine: "arm", scored: true},
+		{args: []string{"--shown", "ru", "ghbdtn"}, shown: "ghbdtn", active: "ru", verdict: "skip", reason: "unrenderable",
+			engine: "unrenderable", code: 2},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -115,8 +122,9 @@ func TestRunAutoCheck(t *testing.T) {
 			if code != tt.code {
 				t.Fatalf("exit %d, want %d (stderr %q)", code, tt.code, stderr)
 			}
-			if res.Shown != tt.shown || res.Alt != tt.alt || res.Active != tt.active || res.Verdict != tt.verdict || res.Reason != tt.reason {
-				t.Fatalf("result %+v, want %s/%s/%s %s:%s", res, tt.shown, tt.alt, tt.active, tt.verdict, tt.reason)
+			if res.Shown != tt.shown || res.Alt != tt.alt || res.Active != tt.active || res.Verdict != tt.verdict ||
+				res.Reason != tt.reason || res.Engine != tt.engine {
+				t.Fatalf("result %+v, want %s/%s/%s %s:%s engine %s", res, tt.shown, tt.alt, tt.active, tt.verdict, tt.reason, tt.engine)
 			}
 			if (res.ShownCost != nil) != tt.scored || (res.AltKnown != nil) != tt.scored {
 				t.Fatalf("scored = %v, want %v", res.ShownCost != nil, tt.scored)
@@ -363,13 +371,13 @@ func TestAutoCheckEvalTSV(t *testing.T) {
 					events = append(events, KeyEvent{Code: KEY_SPACE, Value: K_DOWN})
 				}
 				res, _ := autoCheckEvaluate(events, layouts, row.shown, langs, d, 24)
-				fixed := res.Verdict == lang.Fix.String()
+				fixed := res.Engine == autoCheckEngineArm
 				if armed, why := autoTestEvalEngine(t, layouts, d, row.shown, events); armed != fixed {
-					t.Errorf("%s %q: --auto-check says %s:%s, engine armed=%v (%s)",
-						split, res.Shown, res.Verdict, res.Reason, armed, why)
+					t.Errorf("%s %q: --auto-check says %s:%s engine %s, engine armed=%v (%s)",
+						split, res.Shown, res.Verdict, res.Reason, res.Engine, armed, why)
 				}
 				counts[v].add(row, res.Shown, fixed)
-				if row.fix && res.Reason == autoReasonEdgeKnown {
+				if row.fix && res.Engine == autoReasonEdgeKnown {
 					counts[v].edgeVetoed = append(counts[v].edgeVetoed, row.class+":"+res.Shown)
 				}
 			}

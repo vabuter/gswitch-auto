@@ -19,9 +19,12 @@ const (
 	autoCheckExitUnrenderable = 2
 )
 
-// autoCheckVerdictSkip is the verdict printed when the engine would reject
-// the word before the detector (lastWordRange, lexical or shift-shape veto).
+// autoCheckVerdictSkip is the verdict printed when the detector cannot run:
+// lastWordRange finds no word or the word cannot be rendered in both layouts.
 const autoCheckVerdictSkip = "skip"
+
+// autoCheckEngineArm is the engine field when OnSpace would arm the fix.
+const autoCheckEngineArm = "arm"
 
 const autoCheckUsage = "usage: gswitch --auto-check <text> [--shown <layout>]"
 
@@ -40,14 +43,19 @@ var autoCheckSystem = autoCheckDeps{
 	userDir: userconfig.Dir,
 }
 
-// autoCheckResult is the JSON printed by --auto-check. Costs and dictionary
-// flags are null when the word is not a score candidate.
+// autoCheckResult is the JSON printed by --auto-check. Verdict and Reason are
+// the detector's (SPEC 3.8, manual test M4), also when an engine veto
+// (lexical, shift-shape, trailing edge) would stop the word; Engine is what
+// the engine's OnSpace would do: "arm", or its skip reason code as logged
+// (e.g. "lexical:digit", "detector:shown-known", "too-short"). Costs and
+// dictionary flags are null when the word is not a score candidate.
 type autoCheckResult struct {
 	Shown      string   `json:"shown"`
 	Alt        string   `json:"alt"`
 	Active     string   `json:"active"`
 	Verdict    string   `json:"verdict"`
 	Reason     string   `json:"reason"`
+	Engine     string   `json:"engine"`
 	ShownCost  *float64 `json:"shown_cost"`
 	AltCost    *float64 `json:"alt_cost"`
 	ShownKnown *bool    `json:"shown_known"`
@@ -94,7 +102,8 @@ func autoCheckRun(args []string, stdout, stderr io.Writer, deps autoCheckDeps) i
 		res, code = autoCheckEvaluate(events, layouts, idx, langs, d, settings.MaxLetters)
 	} else {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		res = autoCheckResult{Shown: text, Verdict: autoCheckVerdictSkip, Reason: autoReasonUnrenderable}
+		res = autoCheckResult{Shown: text, Verdict: autoCheckVerdictSkip, Reason: autoReasonUnrenderable,
+			Engine: autoReasonUnrenderable}
 		code = autoCheckExitUnrenderable
 	}
 	res.Active = FormatLayout(specs[idx])
@@ -241,8 +250,10 @@ func autoCheckDetector(s userconfig.Settings, words []string, stderr io.Writer) 
 
 // autoCheckEvaluate runs the engine's word pipeline on a converter buffer
 // that ends with Space: lastWordRange, then autoDecideWord (renderWord,
-// lexicalVeto, shiftShapeVeto, detector). CapsLock is off. The exit code is
-// autoCheckExitUnrenderable when the word cannot be rendered.
+// lexicalVeto, shiftShapeVeto, detector, trailing-edge veto). The detector
+// also runs when a veto stopped the pipeline before it, so that Verdict and
+// Reason are always the detector's for a rendered word. CapsLock is off. The
+// exit code is autoCheckExitUnrenderable when the word cannot be rendered.
 func autoCheckEvaluate(events []KeyEvent, layouts [2]*LayoutInfo, idx int, langs [2]lang.Lang,
 	d *lang.Detector, maxLetters int,
 ) (autoCheckResult, int) {
@@ -251,7 +262,7 @@ func autoCheckEvaluate(events []KeyEvent, layouts [2]*LayoutInfo, idx int, langs
 	pair := lang.Pair{Shown: langs[idx], Alt: langs[1-idx]}
 	r, reason, ok := lastWordRange(events, autoMaxLetters(AutoSettings{MaxLetters: maxLetters}))
 	if !ok {
-		res.Verdict, res.Reason = autoCheckVerdictSkip, reason
+		res.Verdict, res.Reason, res.Engine = autoCheckVerdictSkip, reason, reason
 		if r.End > r.Start {
 			if w, err := renderWord(events, r.Start, r.TextEnd, shown, alt, false); err == nil {
 				res.Shown, res.Alt = w.Shown, w.Alt
@@ -264,15 +275,18 @@ func autoCheckEvaluate(events []KeyEvent, layouts [2]*LayoutInfo, idx int, langs
 	}
 	w, dec, reason := autoDecideWord(events, r, shown, alt, pair, d, false)
 	if reason == autoReasonUnrenderable {
-		res.Verdict, res.Reason = autoCheckVerdictSkip, reason
+		res.Verdict, res.Reason, res.Engine = autoCheckVerdictSkip, reason, reason
 		return res, autoCheckExitUnrenderable
 	}
 	res.Shown, res.Alt = w.Shown, w.Alt
-	if reason == "" || strings.HasPrefix(reason, autoPrefixDetector) {
-		res.Verdict, res.Reason = dec.Verdict.String(), dec.Reason
-	} else {
-		// Vetoed by the engine before or after the detector.
-		res.Verdict, res.Reason = autoCheckVerdictSkip, reason
+	if dec.Reason == "" {
+		// A veto stopped the pipeline before the detector.
+		dec = d.Decide(w.Shown, w.Alt, pair)
+	}
+	res.Verdict, res.Reason = dec.Verdict.String(), dec.Reason
+	res.Engine = reason
+	if reason == "" {
+		res.Engine = autoCheckEngineArm
 	}
 	sc, scored := d.Scores(w.Shown, w.Alt, pair)
 	if dec.Scores != nil {

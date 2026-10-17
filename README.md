@@ -122,9 +122,11 @@ gswitch --auto-check <text> [--shown us|ru]  # run the detector on a word, JSON 
 gswitch --layout-state [--watch SECONDS]     # show the IBus layout tracker state
 ```
 
-`--auto-check ghbdtn --shown us` reports a fix to `привет`; `--layout-state`
-prints the IBus bus address and the active engine (`xkb:us::eng` → 0). Neither
-needs root or input devices.
+`--auto-check ghbdtn --shown us` reports a fix to `привет`: `verdict` and
+`reason` are the detector's, `engine` is what automatic correction would do
+(`arm`, or the reason it skips the word, such as `lexical:digit` for
+`ghb2`). `--layout-state` prints the IBus bus address and the active engine
+(`xkb:us::eng` → 0). Neither needs root or input devices.
 
 ### D-Bus interface
 
