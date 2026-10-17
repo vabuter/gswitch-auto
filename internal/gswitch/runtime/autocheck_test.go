@@ -106,6 +106,7 @@ func TestRunAutoCheck(t *testing.T) {
 		{args: []string{"a"}, shown: "a", alt: "ф", active: "us", verdict: "skip", reason: "too-short"},
 		{args: []string{"it."}, shown: "it.", alt: "шею", active: "us", verdict: "skip", reason: "edge-shown-known", scored: true},
 		{args: []string{"vj."}, shown: "vj.", alt: "мою", active: "us", verdict: "fix", reason: "scores", scored: true},
+		{args: []string{"dc."}, shown: "dc.", alt: "всю", active: "us", verdict: "fix", reason: "scores", scored: true},
 		{args: []string{"--shown", "ru", "ghbdtn"}, shown: "ghbdtn", active: "ru", verdict: "skip", reason: "unrenderable", code: 2},
 	}
 	for _, tt := range tests {

@@ -1378,12 +1378,20 @@ func TestAutoEngineEdgeShownKnown(t *testing.T) {
 		{"b y e . SP", autoReasonEdgeKnown},  // bye. -> иную
 		{"^i t . SP", autoReasonEdgeKnown},   // It. -> Шею
 		{"i t , SP", "detector:alt-unknown"}, // it, -> шеб
-		{"v j . SP", ""},                     // vj. -> мою: "vj" is not a word
-		{"d c ` SP", ""},                     // dc` -> всё: '`' is not word-final punctuation
-		{"j , SP", ""},                       // j, -> об: one-letter core
-		{"' n j SP", ""},                     // 'nj -> это: leading edge
-		{"k . , k . SP", ""},                 // k.,k. -> люблю: the core has punctuation
-		{"g h b d t n SP", ""},               // no edge
+		// Bloom-known abbreviations above autoEdgeMaxCoreCost do not veto
+		// common Russian words.
+		{"d c . SP", ""},       // dc. -> всю (core cost 7.33)
+		{"l f . SP", ""},       // lf. -> даю
+		{"b v t . SP", ""},     // bvt. -> имею
+		{"i k . SP", ""},       // ik. -> шлю
+		{"^d c . SP", ""},      // Dc. -> Всю
+		{"h f , SP", ""},       // hf, -> раб
+		{"v j . SP", ""},       // vj. -> мою: "vj" is not a word
+		{"d c ` SP", ""},       // dc` -> всё: '`' is not word-final punctuation
+		{"j , SP", ""},         // j, -> об: one-letter core
+		{"' n j SP", ""},       // 'nj -> это: leading edge
+		{"k . , k . SP", ""},   // k.,k. -> люблю: the core has punctuation
+		{"g h b d t n SP", ""}, // no edge
 	}
 	for _, tt := range tests {
 		t.Run(tt.script, func(t *testing.T) {

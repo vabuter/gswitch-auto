@@ -24,6 +24,13 @@ const (
 	// autoDefaultMaxLetters applies when the settings carry no word limit
 	// (the auto-max-letters default).
 	autoDefaultMaxLetters = 24
+	// autoEdgeMaxCoreCost bounds the mean trigram cost (bits per letter) of
+	// a shown core that may veto a trailing-edge fix (autoEdgeShownKnown).
+	// The English Bloom filter also knows abbreviations such as "dc", "lf"
+	// or "bvt", whose cores are typed for the common Russian words "всю",
+	// "даю", "имею"; their costs are above 6.0, while words typed with
+	// sentence punctuation, such as "it" (5.40) and "bye" (4.78), are below.
+	autoEdgeMaxCoreCost = 6.0
 )
 
 // Reason codes of the auto engine. lastWordRange, WordTaint, the focus
@@ -40,7 +47,8 @@ const (
 	autoReasonShiftShape    = "shift-shape"
 	// autoReasonEdgeKnown: a trailing key is punctuation on screen but a
 	// letter in the other layout, and the word without it is a dictionary
-	// word of the shown language ("it." would become "шею").
+	// word of the shown language that reads like one ("it." would become
+	// "шею").
 	autoReasonEdgeKnown     = "edge-shown-known"
 	autoReasonRateLimit     = "rate-limit"
 	autoReasonInputPending  = "input-pending"
@@ -354,14 +362,18 @@ func autoDecideWord(buf []KeyEvent, r wordRange, shown, alt *LayoutInfo, pair la
 // the core gives terminal or closing punctuation (Unicode Po, Pe, Pf) in the
 // shown layout but a letter in the alt layout (the us keys . , ; : and the
 // apostrophe, quote and closing brackets are ru letters), and the shown core,
-// at least two letters long, is a dictionary word. The detector scores the
-// alt core with that letter and the shown core without it, and punto-rs only
-// lets a shown dictionary word veto when both cores have the same length
-// (layout.rs:215-216), so "it." would become "шею". Not covered, and left to
-// the detector: leading edges (Russian words starting with э/х/ж, "'nj" =
-// "это", are common), keys that are not word-final punctuation in English
-// (backquote, tilde, opening brackets, angle brackets: "dc`" = "всё") and
-// one-letter cores (every letter is a dictionary word: "j," = "об").
+// at least two letters long, is a dictionary word whose mean trigram cost is
+// at most autoEdgeMaxCoreCost. The detector scores the alt core with that
+// letter and the shown core without it, and punto-rs only lets a shown
+// dictionary word veto when both cores have the same length
+// (layout.rs:215-216), so "it." would become "шею". The cost bound keeps
+// Bloom-known abbreviations ("dc." = "всю", "lf." = "даю", "bvt." = "имею")
+// from vetoing; this is an addition to the SPEC 3.8 pipeline (SPEC 1.6 C29).
+// Not covered, and left to the detector: leading edges (Russian words
+// starting with э/х/ж, "'nj" = "это", are common), keys that are not
+// word-final punctuation in English (backquote, tilde, opening brackets,
+// angle brackets: "dc`" = "всё") and one-letter cores (every letter is a
+// dictionary word: "j," = "об").
 func autoEdgeShownKnown(w renderedWord, shown lang.Lang, judge wordJudge) bool {
 	k, ok := judge.(autoWordKnower)
 	if !ok || w.CoreKeys < 2 {
@@ -375,7 +387,15 @@ func autoEdgeShownKnown(w renderedWord, shown lang.Lang, judge wordJudge) bool {
 			break
 		}
 	}
-	return edge && k.Known(shown, string(shownRunes[w.CoreStart:w.CoreEnd]))
+	if !edge {
+		return false
+	}
+	core := string(shownRunes[w.CoreStart:w.CoreEnd])
+	if !k.Known(shown, core) {
+		return false
+	}
+	cost, ok := k.Cost(shown, core)
+	return ok && cost <= autoEdgeMaxCoreCost
 }
 
 // NextDeadline returns how long the Run loop may wait before the next Tick;

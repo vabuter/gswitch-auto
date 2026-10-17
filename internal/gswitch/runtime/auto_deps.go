@@ -13,10 +13,12 @@ type wordJudge interface {
 }
 
 // autoWordKnower is an optional capability of a wordJudge: dictionary
-// membership, used by the trailing-edge check of autoDecideWord.
-// *lang.Detector implements it; a judge without it skips the check.
+// membership and the mean trigram cost of a word, used by the trailing-edge
+// check of autoDecideWord. *lang.Detector implements it; a judge without it
+// skips the check.
 type autoWordKnower interface {
 	Known(l lang.Lang, word string) bool
+	Cost(l lang.Lang, word string) (float64, bool)
 }
 
 // LayoutSnapshot is the active layout as the auto engine sees it.

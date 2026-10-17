@@ -115,6 +115,7 @@ English and Russian. "Run goroutine" = the goroutine executing `Switcher.Run()`'
 | C26 | "The auto replay is confirmed because upstream confirms" (refuted: 03-judgements:130 item 4 — confirmation only with `layout-switch=auto` + GNOME detection, `switcher.go:174-177,859`) | `emitOptions.confirm`: the auto path always confirms through the tracker reader, independent of the verify flags (§3.1.4). |
 | C27 | "Sharing `dbus.SessionBus()` in the tray is harmless" | fyne.io/systray v1.12.2 `stayRegistered` (`systray_unix.go:273-305`) receives every signal of the shared connection, returns on `len(Body)<3` and re-registers on a string `Body[2]`. All fork D-Bus clients (both processes) use private connections (`dbus.ConnectSessionBus()`) and close only their own (§3.9.2, §3.5.2). |
 | C28 | "A writable `prop` property callback may call the controller synchronously" | godbus v5.2.2 `prop.Properties.Set` holds `p.mut` while running the callback (`prop/prop.go:310-333`) and `SetMust` takes it again (`:341-343`) ⇒ self-deadlock. The callback only enqueues; one Service goroutine owns all property writes and signal emission (§3.9.2). |
+| C29 | "The detector verdict is final for words with trailing punctuation" (refuted by the integrated eval: `it.` is fixed to `шею`, because punto-rs lets a shown dictionary word veto only when both cores have the same length, `layout.rs:215-216`) | Engine veto after a Fix verdict, `edge-shown-known` (§3.8): a trailing key that is Po/Pe/Pf punctuation on screen and a letter in the alt layout, with a shown core of ≥ 2 letters that is a dictionary word **and** has a mean trigram cost ≤ 6.0 bits/letter, keeps the word (`it.`, `bye.`). The cost bound keeps Bloom-known abbreviations from vetoing common Russian words (`dc.`→`всю`, `lf.`→`даю`, `bvt.`→`имею`, `ik.`→`шлю`, all > 6.0). Recall cost: rare Russian words whose us core is a low-cost English word stay unfixed (`ct.`→`сею`, 5.77). Pinned by `TestAutoEngineEdgeShownKnown`, `TestRunAutoCheck` and the eval in `TestAutoCheckEvalTSV`. |
 
 ---
 
@@ -1215,7 +1216,9 @@ or K_REPEAT while ARMED ⇒ `Cancel("input")`.
 `renderWord(c.buffer, r.Start, r.TextEnd, …)` (word without its Space; shown = `Layouts[Index]`,
 alt = `Layouts[1-Index]`, Caps from `Caps()`) ⇒ `unrenderable` →
 `lexicalVeto(Shown)` → `shiftShapeVeto` ⇒ `shift-shape` → `Judge.Decide(Shown, Alt,
-lang.Pair{Langs[Index], Langs[1-Index]})`; not `Fix` ⇒ `detector:<reason>`. On Fix: ARMED with
+lang.Pair{Langs[Index], Langs[1-Index]})`; not `Fix` ⇒ `detector:<reason>` → trailing-edge veto
+(C29: Po/Pe/Pf edge on screen that is an alt letter, shown core ≥ 2 letters, dictionary word with
+mean trigram cost ≤ 6.0 bits/letter) ⇒ `edge-shown-known`. On Fix: ARMED with
 `range`, copy of `c.buffer[Start:End]`, `deadline = Now()+Holdoff`, `spaceUp=false`, decided
 `Index`/`Generation`/`wordSeq`, `armedAt`; `Armed++`.
 
