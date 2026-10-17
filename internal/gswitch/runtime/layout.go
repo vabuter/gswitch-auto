@@ -15,7 +15,8 @@ import (
 	"github.com/arumata/gswitch/internal/gswitch/detect"
 )
 
-const xkbSymbolsPath = "/usr/share/X11/xkb/symbols"
+// xkbSymbolsPath is a variable so tests can load fixture symbol files.
+var xkbSymbolsPath = "/usr/share/X11/xkb/symbols"
 
 // getRealUserHome returns the home directory of the real user,
 // even when running as root via sudo or systemd service
@@ -89,6 +90,10 @@ type LayoutInfo struct {
 	Name    string            // e.g., "us", "ru"
 	Variant string            // e.g., "basic", "winkeys"
 	KeyMap  map[string][]rune // keycode -> [normal, shift] runes
+	// Unmapped marks keys whose first symbol group contains a keysym without a
+	// rune (dead_*, NoSymbol, VoidSymbol, Multi_key). KeyMap drops such keysyms,
+	// so the levels of these keys cannot be trusted.
+	Unmapped map[string]bool
 }
 
 // LayoutConverter handles conversion between two keyboard layouts
@@ -396,9 +401,10 @@ func loadLayoutWithVisited(name, variant string, visited map[string]bool) (*Layo
 	if visited[visitKey] {
 		// Already visited this layout variant, skip to prevent infinite recursion
 		return &LayoutInfo{
-			Name:    name,
-			Variant: variant,
-			KeyMap:  make(map[string][]rune),
+			Name:     name,
+			Variant:  variant,
+			KeyMap:   make(map[string][]rune),
+			Unmapped: make(map[string]bool),
 		}, nil
 	}
 	visited[visitKey] = true
@@ -411,9 +417,10 @@ func loadLayoutWithVisited(name, variant string, visited map[string]bool) (*Layo
 	defer file.Close()
 
 	layout := &LayoutInfo{
-		Name:    name,
-		Variant: variant,
-		KeyMap:  make(map[string][]rune),
+		Name:     name,
+		Variant:  variant,
+		KeyMap:   make(map[string][]rune),
+		Unmapped: make(map[string]bool),
 	}
 
 	// If no variant specified, use the file's default section (marked with the
@@ -467,6 +474,12 @@ func loadLayoutWithVisited(name, variant string, visited map[string]bool) (*Layo
 				includedLayout, err := loadLayoutWithVisited(includeName, includeVariant, visited)
 				if err == nil {
 					maps.Copy(layout.KeyMap, includedLayout.KeyMap)
+					// Keys the include defines replace earlier definitions,
+					// including their unmapped state.
+					for keycode := range includedLayout.KeyMap {
+						delete(layout.Unmapped, keycode)
+					}
+					maps.Copy(layout.Unmapped, includedLayout.Unmapped)
 				}
 			}
 		}
@@ -478,15 +491,23 @@ func loadLayoutWithVisited(name, variant string, visited map[string]bool) (*Layo
 			syms := strings.Split(symsStr, ",")
 
 			runes := make([]rune, 0, len(syms))
+			unmapped := false
 			for _, sym := range syms {
 				sym = strings.TrimSpace(sym)
 				if r := keysymToRune(sym); r != 0 {
 					runes = append(runes, r)
+				} else {
+					unmapped = true
 				}
 			}
 
 			if len(runes) > 0 {
 				layout.KeyMap[keycode] = runes
+			}
+			if unmapped {
+				layout.Unmapped[keycode] = true
+			} else {
+				delete(layout.Unmapped, keycode)
 			}
 		}
 	}
