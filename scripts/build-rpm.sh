@@ -12,8 +12,9 @@
 #   --nfpm PATH   nfpm executable; default: nfpm on PATH, then ~/go/bin/nfpm,
 #                 then `go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0`
 #
-# Steps: preflight (tools, every packaged source path, version rules, extension
-# consistency) -> go test ./... -> CGO build of builds/gswitch and
+# Steps: preflight (tools, every source path the RPM packages — entries marked
+# `packager: deb` in nfpm.yaml belong to scripts/build-deb.sh —, version
+# rules, extension consistency) -> go test ./... -> CGO build of builds/gswitch and
 # builds/gswitch-tray with -X main.version=V -> nfpm -> sha256 checksums.txt ->
 # metadata assertions on the RPM (rpm -qp) -> upgrade dry run (rpm -U --test)
 # when upstream gswitch or an older gswitch-auto is installed on this host.
@@ -131,14 +132,69 @@ version=$(GSWITCH_VERSION=$version scripts/version.sh)
 base=$(GSWITCH_VERSION=$version scripts/version.sh --base)
 printf 'version %s, release %s, upstream base %s\n' "$version" "$release" "$base"
 
-# Every source the package needs, except the binaries built below.
-mapfile -t sources < <(
-    sed -n \
-        -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*src:[[:space:]]*\([^[:space:]#]*\).*$/\1/p' \
-        -e 's/^[[:space:]]*\(pre\|post\)\(install\|remove\|trans\):[[:space:]]*\([^[:space:]#]*\).*$/\3/p' \
-        "$nfpm_yaml" | grep -v '^builds/' | sort -u
-)
-((${#sources[@]} > 0)) || die "no src entries found in $nfpm_yaml"
+# packaged_sources PACKAGER: every src: path of packaging/nfpm.yaml that the
+# given packager uses, one per line: contents entries without a packager or
+# with this one (deb-only entries such as the legacy extension tree are
+# skipped), plus the maintainer scripts after the packager block and the
+# overrides are applied (the same merge nfpm performs). Line based on
+# purpose: python3-yaml is not available everywhere this runs. Kept in sync
+# with scripts/build-deb.sh.
+packaged_sources() {
+    python3 - "$nfpm_yaml" "$1" <<'EOF'
+import re
+import sys
+
+path, packager = sys.argv[1], sys.argv[2]
+key_re = re.compile(r"^\s*(?:-\s+)?([a-z_]+):\s*(\S*)\s*$")
+script_re = re.compile(r"^(pre|post)(install|remove|trans)$")
+section = None       # current top-level key
+override = None      # packager block inside "overrides:"
+entry = None         # current contents entry
+entries = []
+scripts = {}         # top-level "scripts:"
+packager_scripts = {}  # "rpm:"/"deb:" blocks (pretrans, posttrans, ...)
+override_scripts = {}  # "overrides: <packager>: scripts:"
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        m = key_re.match(line)
+        if indent == 0 and m:
+            section, override, entry = m.group(1), None, None
+            continue
+        if section == "contents":
+            if re.match(r"^\s*-\s", line):
+                entry = {}
+                entries.append(entry)
+            if m and entry is not None:
+                entry[m.group(1)] = m.group(2)
+        elif section == "overrides":
+            if indent == 2 and m and m.group(2) == "":
+                override = m.group(1)
+            elif m and script_re.match(m.group(1)) and override == packager:
+                override_scripts[m.group(1)] = m.group(2)
+        elif section == "scripts" and m and script_re.match(m.group(1)):
+            scripts[m.group(1)] = m.group(2)
+        elif section == packager and m and script_re.match(m.group(1)):
+            packager_scripts[m.group(1)] = m.group(2)
+
+paths = set()
+for e in entries:
+    if e.get("src") and e.get("packager", packager) == packager:
+        paths.add(e["src"])
+merged = dict(scripts)
+merged.update(packager_scripts)
+merged.update(override_scripts)
+paths.update(v for v in merged.values() if v)
+for p in sorted(paths):
+    print(p)
+EOF
+}
+
+# Every source the RPM needs, except the binaries built below.
+mapfile -t sources < <(packaged_sources rpm | grep -v '^builds/' | sort -u)
+((${#sources[@]} > 0)) || die "no src entries for the rpm packager found in $nfpm_yaml"
 missing_sources=()
 for src in "${sources[@]}"; do
     [[ -e $src ]] || missing_sources+=("$src")
