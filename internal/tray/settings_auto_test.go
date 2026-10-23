@@ -241,6 +241,8 @@ func TestAutoStatusTexts(t *testing.T) {
 		"degraded": strGAReasonDegraded, "no-layout-converter": strGAReasonNoLayoutConverter,
 		"unsupported-layouts": strGAReasonUnsupportedLayouts, "layout-source-off": strGAReasonLayoutSourceOff,
 		"layout-unknown": strGAReasonLayoutUnknown, "root-mode": strGAReasonRootMode, "detector-error": strGAReasonDetectorError,
+		"layout-source-unsupported": strGAReasonLayoutSourceUnsupported, "focus-source-off": strGAReasonFocusSourceOff,
+		"focus-extension-required": strGAReasonFocusExtensionRequired,
 	} {
 		if autoReasonText(code) != tr(id) {
 			t.Errorf("reason %s untranslated", code)
@@ -288,6 +290,99 @@ func TestAutoNotices(t *testing.T) {
 	same.ConfigDir = "/x/gswitch/"
 	if got := autoNotices(same, "/x/gswitch", "", nil); len(got) != 0 {
 		t.Fatalf("equal dirs reported: %q", got)
+	}
+
+	// Strict mode without the extension: the hint follows the daemon's
+	// reason code and comes after the configuration warnings.
+	strict := gaTestStatus(true, false)
+	strict.UnavailableReason = "focus-extension-required"
+	strict.ConfigWarnings = []string{"layout-source=x11 needs an X11 session"}
+	got := autoNotices(strict, "", "", nil)
+	if len(got) != 2 || !strings.HasPrefix(got[0], "Configuration warnings: ") || got[1] != tr(strGAHintStrictNoExtension) {
+		t.Fatalf("strict notices = %q", got)
+	}
+	for _, reason := range []string{"", "layout-unknown", "focus-source-off"} {
+		other := gaTestStatus(true, false)
+		other.UnavailableReason = reason
+		if got := autoNotices(other, "", "", nil); len(got) != 0 {
+			t.Errorf("reason %q: notices = %q", reason, got)
+		}
+	}
+	offline := ipc.ClientStatus{Status: ipc.Status{UnavailableReason: "focus-extension-required"}}
+	if got := autoNotices(offline, "", "", nil); len(got) != 0 {
+		t.Fatalf("stale reason of a disconnected daemon reported: %q", got)
+	}
+}
+
+// TestStrictPurposeValue: the checkbox keeps an untouched value (auto stays
+// auto, explicit values stay explicit) and writes true/false when toggled
+// against the loaded setting's effective value.
+func TestStrictPurposeValue(t *testing.T) {
+	for _, tt := range []struct {
+		loaded  string
+		wayland bool
+		checked bool
+		want    string
+	}{
+		{userconfig.StrictAuto, true, false, userconfig.StrictAuto}, // Wayland: auto = off, untouched
+		{userconfig.StrictAuto, true, true, userconfig.StrictOn},    // Wayland: ticked
+		{userconfig.StrictAuto, false, true, userconfig.StrictAuto}, // X11: auto = on, untouched
+		{userconfig.StrictAuto, false, false, userconfig.StrictOff}, // X11: cleared
+		{userconfig.StrictOn, true, true, userconfig.StrictOn},
+		{userconfig.StrictOn, false, true, userconfig.StrictOn},
+		{userconfig.StrictOn, true, false, userconfig.StrictOff},
+		{userconfig.StrictOn, false, false, userconfig.StrictOff},
+		{userconfig.StrictOff, true, false, userconfig.StrictOff},
+		{userconfig.StrictOff, false, false, userconfig.StrictOff},
+		{userconfig.StrictOff, true, true, userconfig.StrictOn},
+		{userconfig.StrictOff, false, true, userconfig.StrictOn},
+		{"", true, false, userconfig.StrictAuto}, // zero value behaves as auto
+		{"", false, true, userconfig.StrictAuto},
+		{"", false, false, userconfig.StrictOff},
+	} {
+		loaded := userconfig.DefaultSettings()
+		loaded.StrictPurpose = tt.loaded
+		if got := strictPurposeValue(loaded, tt.checked, tt.wayland); got != tt.want {
+			t.Errorf("strictPurposeValue(loaded %q, checked=%v, wayland=%v) = %q, want %q",
+				tt.loaded, tt.checked, tt.wayland, got, tt.want)
+		}
+	}
+	// Whatever the checkbox writes is a valid setting that Apply can diff.
+	loaded := userconfig.DefaultSettings()
+	edited := loaded
+	edited.StrictPurpose = strictPurposeValue(loaded, false, false)
+	if err := edited.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if diff := userconfig.DiffSettings(loaded, edited); diff[userconfig.KeyStrictPurpose] != userconfig.StrictOff || len(diff) != 1 {
+		t.Fatalf("diff = %v", diff)
+	}
+	edited.StrictPurpose = strictPurposeValue(loaded, true, false)
+	if diff := userconfig.DiffSettings(loaded, edited); len(diff) != 0 {
+		t.Fatalf("untouched auto written: %v", diff)
+	}
+}
+
+func TestTrayWaylandSession(t *testing.T) {
+	for _, tt := range []struct {
+		waylandDisplay, sessionType string
+		want                        bool
+	}{
+		{"wayland-0", "wayland", true},
+		{"wayland-0", "", true},
+		{"wayland-0", "x11", true}, // WAYLAND_DISPLAY wins, like the daemon's rule
+		{"", "wayland", true},
+		{"", "Wayland", true},
+		{"", "x11", false},
+		{"", "tty", false},
+		{"", "", false}, // unknown session type: not positively Wayland (strict)
+	} {
+		t.Setenv("WAYLAND_DISPLAY", tt.waylandDisplay)
+		t.Setenv("XDG_SESSION_TYPE", tt.sessionType)
+		if got := trayWaylandSession(); got != tt.want {
+			t.Errorf("WAYLAND_DISPLAY=%q XDG_SESSION_TYPE=%q: trayWaylandSession() = %v, want %v",
+				tt.waylandDisplay, tt.sessionType, got, tt.want)
+		}
 	}
 }
 
@@ -442,6 +537,10 @@ func TestAutoPageRoundTrip(t *testing.T) {
 	gaTestUseLanguage(t, "en")
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
+	// An X11 session for the strict rule (auto ⇒ strict): the checkbox
+	// starts ticked, and clearing it writes auto-strict-purpose=false.
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("XDG_SESSION_TYPE", "x11")
 	dir := filepath.Join(home, userconfig.DirName)
 	gaTestWriteList(t, dir, userconfig.WordsName, "alpha\n")
 	oldAccels := readSwitchAccels
@@ -487,9 +586,16 @@ func TestAutoPageRoundTrip(t *testing.T) {
 	if got := w.auto.words.entries(); !slices.Equal(got, []string{"alpha", "learned", "edited"}) {
 		t.Fatalf("unsaved edits lost: %v", got)
 	}
+	if !w.auto.strictPurposeCheck.GetActive() {
+		t.Fatal("strict checkbox not ticked for auto in an X11 session")
+	}
+	if w.autoSettingsDirty() {
+		t.Fatal("page dirty right after loading")
+	}
 	w.auto.minLettersSpin.SetValue(4)
 	w.auto.words.add("Ghbdtn!")
 	w.auto.skipTerminalCheck.SetActive(false)
+	w.auto.strictPurposeCheck.SetActive(false)
 	w.setHotkeyChord(w.auto.hotkeys[hotkeyToggleAuto], userconfig.Chord{29, 97})
 	cfg := DefaultTrayConfig()
 	plan, err := w.prepareAutoApply(cfg)
@@ -504,7 +610,7 @@ func TestAutoPageRoundTrip(t *testing.T) {
 		t.Fatalf("diff Apply lost a word: %v", saved.Words.Entries())
 	}
 	if saved.Settings.MinLetters != 4 || saved.Settings.SkipTerminal || !saved.Words.Contains("ghbdtn") ||
-		!saved.Settings.ToggleChord.Equal(userconfig.Chord{29, 97}) {
+		!saved.Settings.ToggleChord.Equal(userconfig.Chord{29, 97}) || saved.Settings.StrictPurpose != userconfig.StrictOff {
 		t.Fatalf("saved = %+v words=%v", saved.Settings, saved.Words.Entries())
 	}
 

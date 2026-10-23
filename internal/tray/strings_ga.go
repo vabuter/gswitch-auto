@@ -6,34 +6,40 @@ package tray
 
 // Settings window: tabs and the automatic correction frame.
 const (
-	strGATabGeneral               = "strGATabGeneral"
-	strGATabAuto                  = "strGATabAuto"
-	strGASectionAuto              = "strGASectionAuto"
-	strGACheckEnabled             = "strGACheckEnabled"
-	strGAStatusActive             = "strGAStatusActive"
-	strGAStatusOff                = "strGAStatusOff"
-	strGAStatusDaemonDown         = "strGAStatusDaemonDown"
-	strGAStatusNoIPC              = "strGAStatusNoIPC"
-	strGAStatusUnavailable        = "strGAStatusUnavailable" // %s: reason
-	strGAReasonDegraded           = "strGAReasonDegraded"
-	strGAReasonNoLayoutConverter  = "strGAReasonNoLayoutConverter"
-	strGAReasonUnsupportedLayouts = "strGAReasonUnsupportedLayouts"
-	strGAReasonLayoutSourceOff    = "strGAReasonLayoutSourceOff"
-	strGAReasonLayoutUnknown      = "strGAReasonLayoutUnknown"
-	strGAReasonRootMode           = "strGAReasonRootMode"
-	strGAReasonDetectorError      = "strGAReasonDetectorError"
-	strGALabelMinLetters          = "strGALabelMinLetters"
-	strGACheckShortWords          = "strGACheckShortWords"
-	strGACheckLearnOnUndo         = "strGACheckLearnOnUndo"
-	strGACheckSkipTerminal        = "strGACheckSkipTerminal"
-	strGACheckSkipPassword        = "strGACheckSkipPassword"
-	strGACheckRequireFocus        = "strGACheckRequireFocus"
-	strGAHintTrigger              = "strGAHintTrigger"
-	strGAHintNotPersisted         = "strGAHintNotPersisted"
-	strGALastCorrection           = "strGALastCorrection" // %s → %s
-	strGALastCorrectionNone       = "strGALastCorrectionNone"
-	strGAConfigWarnings           = "strGAConfigWarnings"    // %s: joined warnings
-	strGAConfigDirMismatch        = "strGAConfigDirMismatch" // %s daemon dir, %s tray dir
+	strGATabGeneral                    = "strGATabGeneral"
+	strGATabAuto                       = "strGATabAuto"
+	strGASectionAuto                   = "strGASectionAuto"
+	strGACheckEnabled                  = "strGACheckEnabled"
+	strGAStatusActive                  = "strGAStatusActive"
+	strGAStatusOff                     = "strGAStatusOff"
+	strGAStatusDaemonDown              = "strGAStatusDaemonDown"
+	strGAStatusNoIPC                   = "strGAStatusNoIPC"
+	strGAStatusUnavailable             = "strGAStatusUnavailable" // %s: reason
+	strGAReasonDegraded                = "strGAReasonDegraded"
+	strGAReasonNoLayoutConverter       = "strGAReasonNoLayoutConverter"
+	strGAReasonUnsupportedLayouts      = "strGAReasonUnsupportedLayouts"
+	strGAReasonLayoutSourceOff         = "strGAReasonLayoutSourceOff"
+	strGAReasonLayoutUnknown           = "strGAReasonLayoutUnknown"
+	strGAReasonRootMode                = "strGAReasonRootMode"
+	strGAReasonDetectorError           = "strGAReasonDetectorError"
+	strGAReasonLayoutSourceUnsupported = "strGAReasonLayoutSourceUnsupported"
+	strGAReasonFocusSourceOff          = "strGAReasonFocusSourceOff"
+	strGAReasonFocusExtensionRequired  = "strGAReasonFocusExtensionRequired"
+	strGALabelMinLetters               = "strGALabelMinLetters"
+	strGACheckShortWords               = "strGACheckShortWords"
+	strGACheckLearnOnUndo              = "strGACheckLearnOnUndo"
+	strGACheckSkipTerminal             = "strGACheckSkipTerminal"
+	strGACheckSkipPassword             = "strGACheckSkipPassword"
+	strGACheckRequireFocus             = "strGACheckRequireFocus"
+	strGACheckStrictPurpose            = "strGACheckStrictPurpose"
+	strGAHintStrictPurpose             = "strGAHintStrictPurpose"
+	strGAHintStrictNoExtension         = "strGAHintStrictNoExtension"
+	strGAHintTrigger                   = "strGAHintTrigger"
+	strGAHintNotPersisted              = "strGAHintNotPersisted"
+	strGALastCorrection                = "strGALastCorrection" // %s → %s
+	strGALastCorrectionNone            = "strGALastCorrectionNone"
+	strGAConfigWarnings                = "strGAConfigWarnings"    // %s: joined warnings
+	strGAConfigDirMismatch             = "strGAConfigDirMismatch" // %s daemon dir, %s tray dir
 )
 
 // Settings window: hotkeys frame and the chord key picker.
