@@ -7,19 +7,28 @@
 #   make rpm         build dist/gswitch-auto-<version>-<release>.x86_64.rpm
 #                    and dist/checksums.txt (scripts/build-rpm.sh, runs tests)
 #   make install     make rpm, then install it with sudo dnf
+#   make deb         build dist/gswitch-auto_<version>-<revision>_amd64.deb and
+#                    dist/checksums-deb.txt inside the Debian 12 podman image
+#                    (scripts/build-deb.sh, runs tests and lintian)
+#   make deb-image   build the Debian 12 image only (packaging/debian12.Containerfile)
 #   make ext-check   GNOME Shell extension consistency checks
 #   make version     print the package version (scripts/version.sh)
-#   make clean       remove builds/ and dist/
+#   make clean       remove builds/ (including builds/deb) and dist/
 #
 # Variables: GSWITCH_VERSION (default: scripts/version.sh), GSWITCH_RELEASE (1),
-# NFPM (nfpm executable, default ~/go/bin/nfpm; nfpm on PATH or
-# `go run ...nfpm@v2.48.0` is used when it does not exist), GO, BUILDDIR, DISTDIR.
+# GSWITCH_DEB_REVISION (1), NFPM (nfpm executable, default ~/go/bin/nfpm; nfpm
+# on PATH or `go run ...nfpm@v2.48.0` is used when it does not exist), PODMAN
+# (podman), DEB_IMAGE (localhost/gswitch-auto-deb:bookworm), GO, BUILDDIR,
+# DISTDIR.
 
 GO ?= go
 NFPM ?= $(HOME)/go/bin/nfpm
+PODMAN ?= podman
+DEB_IMAGE ?= localhost/gswitch-auto-deb:bookworm
 BUILDDIR ?= builds
 DISTDIR ?= dist
 GSWITCH_RELEASE ?= 1
+GSWITCH_DEB_REVISION ?= 1
 
 ifeq ($(origin GSWITCH_VERSION),undefined)
 GSWITCH_VERSION := $(shell scripts/version.sh 2>/dev/null)
@@ -30,7 +39,7 @@ NFPM_FLAG := $(if $(shell command -v '$(NFPM)' 2>/dev/null),--nfpm '$(NFPM)')
 VERSION_FLAG := $(if $(GSWITCH_VERSION),--version '$(GSWITCH_VERSION)')
 RPM_FILE := $(DISTDIR)/gswitch-auto-$(GSWITCH_VERSION)-$(GSWITCH_RELEASE).x86_64.rpm
 
-.PHONY: all build test vet lint rpm install ext-check version clean
+.PHONY: all build test vet lint rpm install deb deb-image ext-check version clean
 
 all: build
 
@@ -57,6 +66,14 @@ install: rpm
 	@test -n '$(GSWITCH_VERSION)' || { echo "cannot determine the version; set GSWITCH_VERSION" >&2; exit 1; }
 	sudo dnf install '$(abspath $(RPM_FILE))'
 
+# The .deb is built inside the Debian 12 image (Debian 12 has no Go 1.25+);
+# scripts/build-deb.sh builds the image when needed and re-runs itself in it.
+deb:
+	PODMAN='$(PODMAN)' scripts/build-deb.sh $(VERSION_FLAG) --revision '$(GSWITCH_DEB_REVISION)' --out '$(DISTDIR)' --image '$(DEB_IMAGE)'
+
+deb-image:
+	$(PODMAN) build -t '$(DEB_IMAGE)' -f packaging/debian12.Containerfile packaging/
+
 ext-check:
 	scripts/check-extension.sh
 
@@ -64,4 +81,4 @@ version:
 	@scripts/version.sh
 
 clean:
-	rm -rf $(BUILDDIR) $(DISTDIR)
+	rm -rf $(BUILDDIR)/deb $(BUILDDIR) $(DISTDIR)

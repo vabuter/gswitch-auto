@@ -1,0 +1,103 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: gswitch-auto
+Upstream-Contact: https://github.com/vabuter/gswitch-auto/issues
+Source: https://github.com/vabuter/gswitch-auto
+Comment:
+ gswitch-auto is a fork of gswitch (https://github.com/arumata/gswitch,
+ MIT License, Copyright (c) 2025 arumata) that adds automatic wrong-layout
+ correction for the us/ru layout pair. The fork is distributed under the
+ same MIT License. The embedded third-party material is described in
+ /usr/share/doc/gswitch-auto/THIRD-PARTY-NOTICES.md; the licence files
+ installed next to it are the verbatim texts referenced below.
+
+Files: *
+Copyright: 2025 arumata
+           2026 vabuter (gswitch-auto fork)
+License: MIT
+
+Files: internal/gswitch/lang/*
+Copyright: 2026 netherguy4 (punto-rs)
+           2026 vabuter (Go port, gswitch-auto fork)
+License: MIT
+Comment:
+ Go port of the layout detector of punto-rs
+ (https://github.com/rashevskyv/punto-rs: cli/src/layout.rs and
+ cli/src/layout/keymap.rs, commit c836c87). The model files under
+ internal/gswitch/lang/data/ and the test data
+ internal/gswitch/lang/testdata/layout_cases.tsv are copied from punto-rs
+ unchanged; the paragraphs below apply to the model files.
+
+Files: internal/gswitch/lang/data/ru.bin
+       internal/gswitch/lang/data/ru.bloom
+Copyright: 1997-2008 Alexander I. Lebedev
+           2026 netherguy4 (punto-rs, model build)
+License: BSD-3-Clause-Modification
+Comment:
+ The Russian model embeds a modified form of the Russian hunspell dictionary
+ (hunspell-ru 0.99g5): its word forms are stored as a Bloom filter (ru.bloom)
+ and a letter-trigram model (ru.bin), built by punto-rs
+ cli/scripts/build_layout_model.sh. These files are a derivative of the
+ dictionary, not the dictionary itself, and are marked as modified here as
+ the dictionary licence requires.
+
+Files: internal/gswitch/lang/data/en.bin
+       internal/gswitch/lang/data/en.bloom
+Copyright: public domain (no copyright holder)
+License: public-domain
+ The English model is built from the word list of the Fedora "words"
+ package (/usr/share/dict/words), which is in the public domain
+ (SPDX: LicenseRef-Fedora-Public-Domain).
+
+Files: third_party/clipboard/*
+Copyright: 2021 Changkun Ou <contact@changkun.de>
+License: MIT
+Comment:
+ Vendored copy of golang.design/x/clipboard, carried over from upstream
+ gswitch with its dlopen("libX11.so.6") fallback.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: BSD-3-Clause-Modification
+ All rights reserved.
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ * Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+ * Modified versions must be clearly marked as such.
+ * The name of Alexander I. Lebedev may not be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.

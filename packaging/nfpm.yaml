@@ -1,14 +1,19 @@
-# nFPM configuration for the gswitch-auto RPM (fork of gswitch).
+# nFPM configuration for the gswitch-auto packages (fork of gswitch).
 #
 # Single source of packaging metadata: upstream's .goreleaser.yml was removed
-# and its nfpms section is mirrored here (see docs/FORK.md). Built by
-# scripts/build-rpm.sh (`make rpm`), which exports:
+# and its nfpms section is mirrored here (see docs/FORK.md). Two packagers
+# share it:
 #
-#   GSWITCH_VERSION  e.g. 0.8.0+auto.1 (scripts/version.sh)
-#   GSWITCH_RELEASE  e.g. 1
+#   rpm  scripts/build-rpm.sh (`make rpm`), Fedora
+#   deb  scripts/build-deb.sh (`make deb`), Debian 12 (SPEC-X11 §3.8)
 #
-# and runs nfpm from the repository root (src paths are relative to it).
-# Binaries are built into builds/ by the same script before packaging.
+# Both export GSWITCH_VERSION (e.g. 0.8.0+auto.1, scripts/version.sh) and
+# GSWITCH_RELEASE (e.g. 1; the Debian revision for deb) and run nfpm from the
+# repository root (src paths are relative to it). Binaries are built by the
+# same scripts before packaging: into builds/ for the RPM and into
+# builds/deb/ for the deb (Debian 12 userland, never over the host binaries).
+# Entries with `packager: rpm` or `packager: deb` belong to one package only;
+# the build scripts' preflight checks the sources of their own packager.
 #
 # Manual run:
 #   GSWITCH_VERSION=0.8.0+auto.1 GSWITCH_RELEASE=1 \
@@ -29,14 +34,17 @@ section: utils
 priority: optional
 vendor: gswitch-auto
 homepage: https://github.com/vabuter/gswitch-auto
-maintainer: vabuter <https://github.com/vabuter/gswitch-auto>
+# "Name <address>": lintian rejects anything else in the deb's Maintainer
+# field (maintainer-address-malformed is an error); the RPM's Packager tag
+# carries the same value.
+maintainer: Vasily Buter <vasily.buter@gmail.com>
 license: MIT AND BSD-3-Clause-Modification AND LicenseRef-Fedora-Public-Domain
 description: |
   Keyboard layout switcher with text correction for Linux (fork of gswitch).
   Corrects text typed in the wrong keyboard layout. Manual correction works
   exactly as in upstream gswitch (double Shift and the other gestures). The
   fork adds automatic correction of the last word for the us/ru layout pair
-  on GNOME Wayland with IBus, triggered by Space and toggled with
+  on GNOME (Wayland with IBus, or X11), triggered by Space and toggled with
   LShift+RShift (off by default), exception lists and a GNOME Shell
   extension that reports the focused application for exclusions.
   Includes the system tray application.
@@ -78,32 +86,68 @@ scripts:
   preremove: scripts/preremove.sh
   postremove: scripts/postremove.sh
 
-# DEB is kept buildable from the same file but is not published (SPEC Q9).
-# RPM-only content types (license, doc) are skipped by nfpm for DEB.
+# Debian 12 package (SPEC-X11 §3.8.1). On deb the replacement of the upstream
+# package is Conflicts + Replaces + Provides: dpkg removes `gswitch` in favour
+# of us, and a package may conflict with a virtual package it provides
+# (Debian Policy 7.4). The upstream prerm runs before our preinst (no
+# pretrans on deb), so scripts/deb/{preinst,postinst}.sh carry the unit
+# enablement over with a marker; preremove/postremove stay upstream's,
+# inherited from the top-level scripts block.
 overrides:
   deb:
     depends:
+      # libc6: nfpm adds no shlib dependencies; without it lintian reports
+      # missing-dependency-on-libc (error). 2.34 is the highest GLIBC_
+      # version the Go/CGO binaries reference; bookworm has 2.36.
+      - libc6 (>= 2.34)
       - systemd
       - libgtk-3-0
+      - libx11-6
+      - libglib2.0-bin
+      - policykit-1
+      - x11-xkb-utils
     recommends:
       - libgtk-3-bin
       - desktop-file-utils
+      - gnome-shell-extension-appindicator
+      - ibus
       - wl-clipboard
+    # nfpm merges overrides field by field and never replaces a list with an
+    # empty one, so without this the RPM's Suggests entry would leak into the
+    # deb and duplicate the Recommends above. The Extensions app toggles the
+    # focus extension without the tray.
+    suggests:
+      - gnome-shell-extension-prefs
     provides:
       - gswitch (= ${GSWITCH_VERSION}-${GSWITCH_RELEASE})
     replaces:
-      - gswitch (<< 0.9)
+      - gswitch
     conflicts:
-      - gswitch (<< 0.9)
+      - gswitch
+    scripts:
+      preinstall: scripts/deb/preinst.sh
+      postinstall: scripts/deb/postinst.sh
 
 contents:
   # --- binaries (goreleaser added these via builds/bindir; listed explicitly) ---
   - src: builds/gswitch
     dst: /usr/bin/gswitch
+    packager: rpm
     file_info:
       mode: 0755
   - src: builds/gswitch-tray
     dst: /usr/bin/gswitch-tray
+    packager: rpm
+    file_info:
+      mode: 0755
+  - src: builds/deb/gswitch
+    dst: /usr/bin/gswitch
+    packager: deb
+    file_info:
+      mode: 0755
+  - src: builds/deb/gswitch-tray
+    dst: /usr/bin/gswitch-tray
+    packager: deb
     file_info:
       mode: 0755
 
@@ -140,12 +184,29 @@ contents:
       mode: 0644
 
   # --- gswitch-tray files ---
+  # The autostart entries live under /etc: plain files for the RPM (as
+  # upstream), conffiles for the deb (lintian: file-in-etc-not-marked-as-conffile
+  # is an error).
   - src: configs/gswitch-tray.desktop
     dst: /etc/xdg/autostart/gswitch-tray.desktop
+    packager: rpm
+    file_info:
+      mode: 0644
+  - src: configs/gswitch-tray.desktop
+    dst: /etc/xdg/autostart/gswitch-tray.desktop
+    type: config
+    packager: deb
     file_info:
       mode: 0644
   - src: configs/gswitch-daemon.desktop
     dst: /etc/xdg/autostart/gswitch-daemon.desktop
+    packager: rpm
+    file_info:
+      mode: 0644
+  - src: configs/gswitch-daemon.desktop
+    dst: /etc/xdg/autostart/gswitch-daemon.desktop
+    type: config
+    packager: deb
     file_info:
       mode: 0644
   - src: configs/gswitch-tray.desktop
@@ -206,56 +267,120 @@ contents:
   # running as the user cannot read, and umask never adds bits) and would
   # ship stray files such as editor swap files. scripts/check-extension.sh
   # checks that every extension file is listed here.
+  #
+  # Two trees with the same UUID and D-Bus interface (SPEC-X11 §3.6): the ESM
+  # variant for GNOME >= 45 goes into the RPM (Fedora), the legacy GJS variant
+  # under shell-extension/legacy/ for GNOME 43/44 goes into the deb (Debian 12).
   - dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io
     type: dir
     file_info:
       mode: 0755
   - src: shell-extension/gswitch-focus@vabuter.github.io/metadata.json
     dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/metadata.json
+    packager: rpm
     file_info:
       mode: 0644
   - src: shell-extension/gswitch-focus@vabuter.github.io/extension.js
     dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js
+    packager: rpm
+    file_info:
+      mode: 0644
+  - src: shell-extension/legacy/gswitch-focus@vabuter.github.io/metadata.json
+    dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/metadata.json
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: shell-extension/legacy/gswitch-focus@vabuter.github.io/extension.js
+    dst: /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js
+    packager: deb
     file_info:
       mode: 0644
 
   # Licences: the fork, the embedded punto-rs models (hunspell-ru derivative,
   # see THIRD-PARTY-NOTICES.md) and the vendored clipboard package.
+  # RPM: %license files under /usr/share/licenses (the license/doc types are
+  # RPM-only and skipped by nfpm for other packagers anyway).
   - src: LICENSE
     dst: /usr/share/licenses/gswitch-auto/LICENSE
     type: license
+    packager: rpm
     file_info:
       mode: 0644
   - src: third_party/punto-rs/LICENSE
     dst: /usr/share/licenses/gswitch-auto/punto-rs-LICENSE
     type: license
+    packager: rpm
     file_info:
       mode: 0644
   - src: third_party/punto-rs/hunspell-ru-LICENSE
     dst: /usr/share/licenses/gswitch-auto/hunspell-ru-LICENSE
     type: license
+    packager: rpm
     file_info:
       mode: 0644
   - src: third_party/punto-rs/NOTICE.md
     dst: /usr/share/licenses/gswitch-auto/THIRD-PARTY-NOTICES.md
     type: license
+    packager: rpm
     file_info:
       mode: 0644
   - src: third_party/clipboard/LICENSE
     dst: /usr/share/licenses/gswitch-auto/clipboard-LICENSE
     type: license
+    packager: rpm
     file_info:
       mode: 0644
 
   - src: README.md
     dst: /usr/share/doc/gswitch-auto/README.md
     type: doc
+    packager: rpm
+    file_info:
+      mode: 0644
+
+  # Deb: the machine-readable copyright file (DEP-5, required by Policy 12.5)
+  # plus the same licence texts and README as plain files under
+  # /usr/share/doc (no /usr/share/licenses on Debian).
+  - src: packaging/debian/copyright
+    dst: /usr/share/doc/gswitch-auto/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/doc/gswitch-auto/LICENSE
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: third_party/punto-rs/LICENSE
+    dst: /usr/share/doc/gswitch-auto/punto-rs-LICENSE
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: third_party/punto-rs/hunspell-ru-LICENSE
+    dst: /usr/share/doc/gswitch-auto/hunspell-ru-LICENSE
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: third_party/punto-rs/NOTICE.md
+    dst: /usr/share/doc/gswitch-auto/THIRD-PARTY-NOTICES.md
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: third_party/clipboard/LICENSE
+    dst: /usr/share/doc/gswitch-auto/clipboard-LICENSE
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/gswitch-auto/README.md
+    packager: deb
     file_info:
       mode: 0644
 
   # Own the package's documentation and licence directories.
   - dst: /usr/share/licenses/gswitch-auto
     type: dir
+    packager: rpm
     file_info:
       mode: 0755
   - dst: /usr/share/doc/gswitch-auto

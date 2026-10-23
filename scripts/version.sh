@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# gswitch-auto package version (docs/FORK.md, SPEC §3.13).
+# gswitch-auto package version (docs/FORK.md, SPEC §3.13, SPEC-X11 §3.8.4).
 #
 #   HEAD at tag v<base>+auto.<N>, clean tree  ->  <base>+auto.<N>
 #   commits after that tag, or a dirty tree   ->  <base>+auto.<N>.dev<n>.g<sha>[.dirty]
 #   no fork tag for the current base yet      ->  <base>+auto.0.dev<n>.g<sha>[.dirty]
 #
 # <base> is the upstream gswitch release the fork is based on: the nearest
-# reachable v<X.Y.Z> tag. "~" versions sort below upstream and are forbidden.
+# reachable v<X.Y.Z> tag. "~" versions sort below upstream (rpm and dpkg
+# alike) and are forbidden; so is "-", which starts the Debian revision.
 # GSWITCH_VERSION, when set, overrides the computation (it is still validated).
 #
 # Usage:
@@ -15,9 +16,17 @@
 #   scripts/version.sh --verify   check the rpm ordering rules, the computed
 #                                 version and the Obsoletes bound in
 #                                 packaging/nfpm.yaml; prints the version last
+#   scripts/version.sh --verify-deb
+#                                 the same ordering rules as dpkg compares
+#                                 them (plus the deb-specific pairs); used by
+#                                 build-deb.sh; prints the version last
 #   scripts/version.sh --vercmp A B
 #                                 compare two [E:]V[-R] strings as rpm does;
 #                                 prints -1, 0 or 1 (used by build-rpm.sh)
+#   scripts/version.sh --debcmp A B
+#                                 compare two [E:]V[-R] strings as dpkg does
+#                                 (dpkg --compare-versions, or a Python port
+#                                 of its algorithm); prints -1, 0 or 1
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
@@ -149,36 +158,130 @@ EOF
     printf '%s\n' "$out"
 }
 
-verify() {
-    local failures=0
+# debcmp A B -> prints -1, 0 or 1 comparing two [E:]V[-R] strings like dpkg.
+debcmp() {
+    local a=$1 b=$2 out=""
+    local allowed='^[0-9A-Za-z.+~:-]+$'
+    [[ $a =~ $allowed && $b =~ $allowed ]] || die "debcmp: unexpected characters in '$a' / '$b'"
 
-    check() { # check A OP B, OP in < = >
-        local a=$1 op=$2 b=$3 want got
-        case $op in
-            '<') want=-1 ;;
-            '=') want=0 ;;
-            '>') want=1 ;;
-            *) die "check: bad operator $op" ;;
-        esac
-        got=$(vercmp "$a" "$b")
-        if [[ $got == "$want" ]]; then
-            printf 'ok    %s %s %s\n' "$a" "$op" "$b"
-        else
-            printf 'FAIL  %s %s %s (rpm vercmp says %s)\n' "$a" "$op" "$b" "$got" >&2
-            failures=$((failures + 1))
+    if command -v dpkg >/dev/null 2>&1; then
+        if dpkg --compare-versions "$a" lt "$b" 2>/dev/null; then
+            out=-1
+        elif dpkg --compare-versions "$a" eq "$b" 2>/dev/null; then
+            out=0
+        elif dpkg --compare-versions "$a" gt "$b" 2>/dev/null; then
+            out=1
         fi
-    }
+    fi
+    if [[ -z $out ]] && command -v python3 >/dev/null 2>&1; then
+        out=$(python3 - "$a" "$b" 2>/dev/null <<'EOF' || true
+import sys
 
-    expect_invalid() {
-        if (validate "$1") 2>/dev/null; then
-            printf 'FAIL  %s is accepted as a version\n' "$1" >&2
-            failures=$((failures + 1))
-        else
-            printf 'ok    %s is rejected\n' "$1"
-        fi
-    }
+# Port of dpkg's lib/dpkg/version.c (order, verrevcmp, dpkg_version_compare):
+# "~" sorts before anything, even the end of the string; letters sort before
+# non-letters; digit runs compare numerically; epoch, upstream version and
+# revision are compared in turn, a missing revision being "".
 
-    # SPEC §3.13 ordering rules (verified against rpm 6.0.2 when written).
+
+def order(c):
+    if c.isdigit():
+        return 0
+    if c.isalpha():
+        return ord(c)
+    if c == "~":
+        return -1
+    if c:
+        return ord(c) + 256
+    return 0
+
+
+def verrevcmp(a, b):
+    i = j = 0
+    while i < len(a) or j < len(b):
+        first_diff = 0
+        while (i < len(a) and not a[i].isdigit()) or (j < len(b) and not b[j].isdigit()):
+            ac = order(a[i]) if i < len(a) else 0
+            bc = order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return ac - bc
+            i += 1
+            j += 1
+        while i < len(a) and a[i] == "0":
+            i += 1
+        while j < len(b) and b[j] == "0":
+            j += 1
+        while i < len(a) and a[i].isdigit() and j < len(b) and b[j].isdigit():
+            if not first_diff:
+                first_diff = ord(a[i]) - ord(b[j])
+            i += 1
+            j += 1
+        if i < len(a) and a[i].isdigit():
+            return 1
+        if j < len(b) and b[j].isdigit():
+            return -1
+        if first_diff:
+            return first_diff
+    return 0
+
+
+def parse(s):
+    epoch, sep, rest = s.partition(":")
+    if not sep:
+        epoch, rest = "0", s
+    version, sep, revision = rest.rpartition("-")
+    if not sep:
+        version, revision = rest, ""
+    return int(epoch), version, revision
+
+
+ea, va, ra = parse(sys.argv[1])
+eb, vb, rb = parse(sys.argv[2])
+c = (ea > eb) - (ea < eb) or verrevcmp(va, vb) or verrevcmp(ra, rb)
+print(-1 if c < 0 else (1 if c > 0 else 0))
+EOF
+)
+    fi
+    [[ $out == -1 || $out == 0 || $out == 1 ]] ||
+        die "cannot compare Debian versions: install dpkg or python3"
+    printf '%s\n' "$out"
+}
+
+# --- ordering rules --------------------------------------------------------
+# check() compares with $cmp_fn (vercmp for rpm, debcmp for dpkg) and counts
+# failures in $failures; both are set by verify() and verify_deb().
+cmp_fn=vercmp
+failures=0
+
+check() { # check A OP B, OP in < = >
+    local a=$1 op=$2 b=$3 want got
+    case $op in
+        '<') want=-1 ;;
+        '=') want=0 ;;
+        '>') want=1 ;;
+        *) die "check: bad operator $op" ;;
+    esac
+    got=$("$cmp_fn" "$a" "$b")
+    if [[ $got == "$want" ]]; then
+        printf 'ok    %s %s %s\n' "$a" "$op" "$b"
+    else
+        printf 'FAIL  %s %s %s (%s says %s)\n' "$a" "$op" "$b" "$cmp_fn" "$got" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+expect_invalid() {
+    if (validate "$1") 2>/dev/null; then
+        printf 'FAIL  %s is accepted as a version\n' "$1" >&2
+        failures=$((failures + 1))
+    else
+        printf 'ok    %s is rejected\n' "$1"
+    fi
+}
+
+# The ordering rules shared by --verify and --verify-deb (SPEC §3.13,
+# verified against rpm 6.0.2 when written; SPEC-X11 §3.8.4 for dpkg). Sets
+# the caller's `v` to the computed version.
+ordering_rules() {
     check '0.8.0+auto.1-1' '>' '0.8.0-1'
     check '0.8.0+auto.1-1' '>' '0.8.0-2'
     check '0.8.0+auto.1-1' '<' '0.8.1-1'
@@ -195,17 +298,25 @@ verify() {
     expect_invalid '0.8.0-auto.1'
     expect_invalid '0.8.0'
 
-    local v base major minor patch
+    local base major minor patch
     v=$(compute_version)
     base=$(base_of "$v")
     IFS=. read -r major minor patch <<<"$base"
     check "$v-1" '>' "$base-1"
     check "$v-1" '>' "$base-2"
     check "$v-1" '<' "$major.$minor.$((patch + 1))-1"
+}
+
+verify() {
+    local v
+    cmp_fn=vercmp
+    failures=0
+    ordering_rules
 
     # Obsoletes bound: upstream releases of the base must be obsoleted.
     if [[ -f $nfpm_yaml ]]; then
-        local bound
+        local bound base
+        base=$(base_of "$v")
         bound=$(sed -n 's/^[[:space:]]*-[[:space:]]*gswitch < \([0-9][0-9.]*\)[[:space:]]*$/\1/p' "$nfpm_yaml" | head -n 1)
         if [[ -z $bound ]]; then
             printf 'FAIL  no "gswitch < X" replaces entry in %s\n' "${nfpm_yaml#"$repo_root"/}" >&2
@@ -223,13 +334,39 @@ verify() {
     printf '%s\n' "$v"
 }
 
+verify_deb() {
+    local v
+    cmp_fn=debcmp
+    failures=0
+    ordering_rules
+
+    # dpkg grammar: "-" would start the revision and "~" sorts below the base
+    # (validate() rejects both; the deb build relies on it, so say so).
+    if [[ $v == *-* || $v == *~* ]]; then
+        printf 'FAIL  %s contains "-" or "~"\n' "$v" >&2
+        failures=$((failures + 1))
+    else
+        printf 'ok    %s contains neither "-" nor "~"\n' "$v"
+    fi
+
+    if ((failures > 0)); then
+        die "$failures check(s) failed"
+    fi
+    printf '%s\n' "$v"
+}
+
 case "${1:-}" in
     '') compute_version ;;
     --base) base_of "$(compute_version)" ;;
     --verify) verify ;;
+    --verify-deb) verify_deb ;;
     --vercmp)
         [[ $# -eq 3 && -n $2 && -n $3 ]] || die "usage: version.sh --vercmp A B"
         vercmp "$2" "$3"
+        ;;
+    --debcmp)
+        [[ $# -eq 3 && -n $2 && -n $3 ]] || die "usage: version.sh --debcmp A B"
+        debcmp "$2" "$3"
         ;;
     -h | --help) usage ;;
     *)

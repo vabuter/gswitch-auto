@@ -1,6 +1,9 @@
 # CI workflow for gswitch-auto (fork of gswitch)
 # Runs build, tests and linters, builds and checks the RPM, and installs it
-# over upstream gswitch v0.8.0 in a Fedora 44 container. Needs no secrets.
+# over upstream gswitch v0.8.0 in a Fedora 44 container; builds and checks the
+# Debian 12 package in the golang:1.26-bookworm image and installs it over
+# upstream gswitch v0.8.0 in a debian:12 container (SPEC-X11 §3.8.5). Needs no
+# secrets.
 
 name: CI
 
@@ -30,7 +33,9 @@ jobs:
           go-version-file: go.mod
 
       # GTK is required for CGO compilation of the tray application;
-      # rpm, rpm2cpio and cpio for the RPM assertions; shellcheck for scripts/
+      # rpm, rpm2cpio and cpio for the RPM assertions; shellcheck for scripts/;
+      # x11-xkb-utils (setxkbmap) for the gated X11 tests under xvfb-run
+      # (SPEC-X11 §6.2)
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -44,6 +49,7 @@ jobs:
             rpm2cpio \
             shellcheck \
             x11-utils \
+            x11-xkb-utils \
             xdotool \
             xvfb
 
@@ -63,12 +69,17 @@ jobs:
           NO_AT_BRIDGE=1 xvfb-run -a python3 .github/scripts/tray_awesome_smoke.py --tray ./builds/gswitch-tray
 
       - name: Shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh scripts/deb/*.sh
 
       - name: Scriptlets tolerate an empty environment
         run: |
           env -i PATH=/nonexistent /bin/sh scripts/pretrans.sh
           env -i PATH=/nonexistent /bin/sh scripts/posttrans.sh
+          env -i PATH=/nonexistent /bin/sh scripts/deb/preinst.sh
+          env -i PATH=/nonexistent /bin/sh scripts/deb/postinst.sh
+
+      - name: Debian version rules (python fallback, no dpkg here)
+        run: scripts/version.sh --verify-deb
 
       # The version is <upstream base>+auto.<N>; the base comes from the
       # nearest upstream vX.Y.Z tag, which the fork's remote may not carry.
@@ -160,6 +171,126 @@ jobs:
           dnf remove -y gswitch-auto
           test ! -e /usr/bin/gswitch
           test ! -e /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io
+
+  # The Debian 12 package is built in the same image `make deb` uses locally
+  # (packaging/debian12.Containerfile): Debian 12 has no Go 1.25+, the image
+  # has the bookworm userland the binaries must link against.
+  deb:
+    name: Build Debian package (bookworm)
+    runs-on: ubuntu-24.04
+    container: docker.io/library/golang:1.26-bookworm
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            gcc libc6-dev pkg-config libgtk-3-dev libx11-dev libxkbcommon-dev \
+            dpkg-dev fakeroot lintian python3 git ca-certificates xvfb x11-xkb-utils
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # scripts/version.sh derives the package version from tags
+          fetch-depth: 0
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+
+      - name: Fetch upstream release tags
+        run: |
+          if ! git describe --tags --abbrev=0 --match 'v[0-9]*' \
+              --exclude '*+*' --exclude '*-*' HEAD >/dev/null 2>&1; then
+            git fetch --no-tags https://github.com/arumata/gswitch.git 'refs/tags/v*:refs/tags/v*'
+          fi
+
+      # Tests already ran in build-test; this job checks the package
+      # (dpkg-deb assertions, lintian errors).
+      - name: Build .deb and assert metadata
+        run: scripts/build-deb.sh --no-container --skip-tests --out dist
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deb
+          path: |
+            dist/*.deb
+            dist/checksums-deb.txt
+          if-no-files-found: error
+
+  install-test-deb:
+    name: Install over upstream (Debian 12)
+    needs: deb
+    runs-on: ubuntu-24.04
+    container: docker.io/library/debian:12
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Download .deb
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deb
+          path: dist
+
+      # The upstream release carries a .deb built by GoReleaser; when the
+      # asset is missing the job still covers a fresh install and removal.
+      - name: Install upstream gswitch v0.8.0
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl
+          url=https://github.com/arumata/gswitch/releases/download/v0.8.0
+          mkdir -p upstream
+          if ! curl -fsSL -o upstream/gswitch_0.8.0_linux_amd64.deb "$url/gswitch_0.8.0_linux_amd64.deb"; then
+            echo "::notice::upstream release v0.8.0 has no gswitch_0.8.0_linux_amd64.deb asset; testing a fresh install only"
+            exit 0
+          fi
+          curl -fsSL -o upstream/checksums.txt "$url/checksums.txt"
+          (cd upstream && sha256sum -c --ignore-missing checksums.txt)
+          apt-get install -y ./upstream/gswitch_0.8.0_linux_amd64.deb
+          dpkg -s gswitch
+
+      - name: Install gswitch-auto over it
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c checksums-deb.txt)
+          apt-get install -y ./dist/gswitch-auto_*.deb
+
+      - name: Assert replacement
+        run: |
+          set -euo pipefail
+          status=$(dpkg-query -W -f='${db:Status-Status}' gswitch 2>/dev/null || true)
+          if [ "$status" = installed ]; then
+            echo "upstream gswitch was not replaced (status: $status)" >&2
+            exit 1
+          fi
+          dpkg -s gswitch-auto
+          version=$(dpkg-query -W -f='${Version}' gswitch-auto)
+          test "$(dpkg-query -W -f='${Provides}' gswitch-auto)" = "gswitch (= $version)"
+          files=$(dpkg -L gswitch-auto)
+          for f in \
+              /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/metadata.json \
+              /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js \
+              /usr/share/doc/gswitch-auto/copyright; do
+            grep -qxF -- "$f" <<<"$files"
+            test -f "$f"
+          done
+          grep -q 'function init(' /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js
+          test "$(gswitch --version)" = "gswitch version ${version%-*}"
+          test -z "$(dpkg -V gswitch-auto)"
+          test -f /usr/lib/systemd/user/gswitch.service
+          test ! -e /usr/lib/systemd/system/gswitch.service
+          test ! -e /run/gswitch-auto
+
+      - name: Remove gswitch-auto
+        run: |
+          set -euo pipefail
+          apt-get remove -y gswitch-auto
+          test ! -e /usr/bin/gswitch
+          test ! -e /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js
 
   lint:
     runs-on: ubuntu-24.04
