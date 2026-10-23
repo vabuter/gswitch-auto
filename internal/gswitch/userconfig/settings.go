@@ -27,6 +27,7 @@ const (
 	KeySkipPassword        = "auto-skip-password"
 	KeySkipTerminal        = "auto-skip-terminal"
 	KeySkipLocked          = "auto-skip-locked"
+	KeyStrictPurpose       = "auto-strict-purpose"
 	KeyToggleChord         = "hotkey-toggle-auto"
 	KeySelectionChord      = "hotkey-convert-selection"
 	KeyExposeWords         = "ipc-expose-words"
@@ -40,7 +41,16 @@ const (
 	SourceAuto = "auto"
 	SourceOff  = "off"
 	SourceIBus = "ibus"
+	SourceX11  = "x11" // layout-source only
 	SourceNone = "none"
+)
+
+// Canonical values of auto-strict-purpose; StrictPurposeFor resolves
+// StrictAuto for a session.
+const (
+	StrictAuto = "auto"
+	StrictOn   = "true"
+	StrictOff  = "false"
 )
 
 // Settings holds the values of auto.conf.
@@ -53,7 +63,8 @@ type Settings struct {
 	HoldoffMs, MinIntervalMs, DelayMs, SwitchDelayMs     int
 	LearnUndoCount, LayoutHintTimeoutMs                  int
 	FocusSource, LayoutSource                            string
-	ToggleChord, SelectionChord                          Chord // nil = disabled ("none")
+	StrictPurpose                                        string // StrictAuto | StrictOn | StrictOff
+	ToggleChord, SelectionChord                          Chord  // nil = disabled ("none")
 }
 
 // DefaultSettings returns the documented defaults (§3.6.2 of the spec).
@@ -75,6 +86,7 @@ func DefaultSettings() Settings {
 		SkipPassword:        true,
 		SkipTerminal:        true,
 		SkipLocked:          true,
+		StrictPurpose:       StrictAuto,
 		ToggleChord:         Chord{42, 54},
 		SelectionChord:      Chord{42, 97, 100},
 		ExposeWords:         true,
@@ -163,6 +175,32 @@ func enumField(key string, allowed []string, p func(*Settings) *string) settingF
 	}
 }
 
+// strictField describes auto-strict-purpose: "auto" plus every parseBool
+// spelling, stored canonically as StrictAuto, StrictOn or StrictOff.
+func strictField(key string, p func(*Settings) *string) settingField {
+	return settingField{
+		key:  key,
+		kind: "auto, true or false",
+		get:  func(s *Settings) string { return *p(s) },
+		set: func(s *Settings, v string) error {
+			if strings.EqualFold(v, StrictAuto) {
+				*p(s) = StrictAuto
+				return nil
+			}
+			b, err := parseBool(v)
+			if err != nil {
+				return errors.New("not auto or a boolean")
+			}
+			if b {
+				*p(s) = StrictOn
+			} else {
+				*p(s) = StrictOff
+			}
+			return nil
+		},
+	}
+}
+
 func chordField(key string, p func(*Settings) *Chord) settingField {
 	return settingField{
 		key:  key,
@@ -197,11 +235,12 @@ var settingFields = []settingField{
 	boolField(KeySkipPassword, func(s *Settings) *bool { return &s.SkipPassword }),
 	boolField(KeySkipTerminal, func(s *Settings) *bool { return &s.SkipTerminal }),
 	boolField(KeySkipLocked, func(s *Settings) *bool { return &s.SkipLocked }),
+	strictField(KeyStrictPurpose, func(s *Settings) *string { return &s.StrictPurpose }),
 	chordField(KeyToggleChord, func(s *Settings) *Chord { return &s.ToggleChord }),
 	chordField(KeySelectionChord, func(s *Settings) *Chord { return &s.SelectionChord }),
 	boolField(KeyExposeWords, func(s *Settings) *bool { return &s.ExposeWords }),
 	enumField(KeyFocusSource, []string{SourceAuto, SourceOff}, func(s *Settings) *string { return &s.FocusSource }),
-	enumField(KeyLayoutSource, []string{SourceAuto, SourceIBus, SourceNone}, func(s *Settings) *string { return &s.LayoutSource }),
+	enumField(KeyLayoutSource, []string{SourceAuto, SourceIBus, SourceX11, SourceNone}, func(s *Settings) *string { return &s.LayoutSource }),
 	intField(KeyLayoutHintTimeoutMs, 100, 2000, func(s *Settings) *int { return &s.LayoutHintTimeoutMs }),
 }
 
@@ -295,8 +334,26 @@ func (s Settings) Equal(o Settings) bool {
 		s.LayoutHintTimeoutMs == o.LayoutHintTimeoutMs &&
 		s.FocusSource == o.FocusSource &&
 		s.LayoutSource == o.LayoutSource &&
+		s.StrictPurpose == o.StrictPurpose &&
 		s.ToggleChord.Equal(o.ToggleChord) &&
 		s.SelectionChord.Equal(o.SelectionChord)
+}
+
+// StrictPurposeFor resolves auto-strict-purpose for a session. wayland is
+// "positively Wayland" (WAYLAND_DISPLAY set or XDG_SESSION_TYPE=wayland);
+// StrictAuto is strict everywhere else, i.e. in X11 sessions and when the
+// session type is unknown (fail-closed: a missing variable in the systemd
+// --user environment must select strict, never fail-open; SPEC-X11 §3.3).
+// The zero value counts as StrictAuto.
+func (s Settings) StrictPurposeFor(wayland bool) bool {
+	switch s.StrictPurpose {
+	case StrictOn:
+		return true
+	case StrictOff:
+		return false
+	default:
+		return !wayland
+	}
 }
 
 // Values returns every key with its canonical auto.conf value.

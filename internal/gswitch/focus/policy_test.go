@@ -96,12 +96,25 @@ func TestPolicyAllow(t *testing.T) {
 	unknownFocus := State{Available: true, EverAvailable: true, Purpose: PurposeUnknown, FocusUnknown: true}
 	lockedUnknown := unknownFocus
 	lockedUnknown.Locked, lockedUnknown.LockReason = true, LockReasonScreenSaver
+	noneField := focusTestState("org.gnome.Nautilus.desktop", "org.gnome.Nautilus", PurposeNone)
+	unknownPurpose := focusTestState("org.gnome.Nautilus.desktop", "org.gnome.Nautilus", PurposeUnknown)
+	email := focusTestState("org.mozilla.Thunderbird.desktop", "thunderbird", "email")
+	urlField := focusTestState("org.mozilla.firefox.desktop", "firefox", "url")
+	noneInEditor := focusTestState("org.gnome.TextEditor.desktop", "org.gnome.TextEditor", PurposeNone)
+	// Extension absent, identity from the X11 EWMH source (SPEC-X11 §3.2.2).
+	x11Excluded := strictTestX11State("Foo-Bar")
+	x11Other := strictTestX11State("Gnome-terminal")
 
 	defaults := focusTestDefaultPolicy(nil)
 	permissive := Policy{}
 	requireExt := defaults
 	requireExt.RequireExtension = true
 	excluded := focusTestDefaultPolicy(&focusTestMatcher{patterns: []string{"org.gnome.texteditor", "foo-*"}})
+	strict := defaults
+	strict.RequirePurpose = true
+	strictPermissive := Policy{RequirePurpose: true}
+	strictExcluded := excluded
+	strictExcluded.RequirePurpose = true
 
 	tests := []struct {
 		name   string
@@ -137,6 +150,31 @@ func TestPolicyAllow(t *testing.T) {
 		{"unknown focus denies", excluded, unknownFocus, false, ReasonFocusUnknown},
 		{"unknown focus denies with a permissive policy", permissive, unknownFocus, false, ReasonFocusUnknown},
 		{"lock checked before unknown focus", defaults, lockedUnknown, false, ReasonLocked},
+		// Extension absent: the X11 identity still goes through the
+		// exclusion list (fail-open otherwise), unless an extension is
+		// required.
+		{"absent with X11 identity excluded", excluded, x11Excluded, false, ReasonExcludedApp},
+		{"absent with X11 identity not excluded", excluded, x11Other, true, ""},
+		{"absent with X11 identity and RequireExtension", requireExt, x11Excluded, false, ReasonFocusUnavailable},
+		// Strict purpose mode (SPEC-X11 §3.2.4).
+		{"strict: normal allowed", strict, editor, true, ""},
+		{"strict: email allowed", strict, email, true, ""},
+		{"strict: url allowed", strict, urlField, true, ""},
+		{"strict: none denies", strict, noneField, false, ReasonPurposeUnknown},
+		{"strict: unknown denies", strict, unknownPurpose, false, ReasonPurposeUnknown},
+		{"strict: none denies with a permissive policy", strictPermissive, noneField, false, ReasonPurposeUnknown},
+		{"strict: password denies as password field", strict, password, false, ReasonPasswordField},
+		{"strict: pin denies as password field", strict, pin, false, ReasonPasswordField},
+		{"strict: password without SkipPassword denies as unknown purpose", strictPermissive, password, false, ReasonPurposeUnknown},
+		{"strict: terminal denies", strict, terminal, false, ReasonTerminal},
+		{"strict: terminal allowed without SkipTerminal", strictPermissive, terminal, true, ""},
+		{"strict: extension absent denies", strict, absent, false, ReasonFocusUnavailable},
+		{"strict: extension disabled denies", strict, disabled, false, ReasonFocusUnavailable},
+		{"strict: X11 identity without extension denies", strictExcluded, x11Excluded, false, ReasonFocusUnavailable},
+		{"strict: unknown focus denies", strict, unknownFocus, false, ReasonFocusUnknown},
+		{"strict: lock checked before availability", strict, lockedAbsent, false, ReasonLocked},
+		{"strict: excluded app denies", strictExcluded, editor, false, ReasonExcludedApp},
+		{"strict: purpose checked before exclusions", strictExcluded, noneInEditor, false, ReasonPurposeUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,6 +214,75 @@ func TestPolicyAllowSkipsMatcherWhenEarlierRuleDecides(t *testing.T) {
 	}
 }
 
+// strictTestX11State is a focus state without the extension whose identity
+// comes from the X11 source: WM_CLASS only, purpose unknown.
+func strictTestX11State(wmClass string) State {
+	return State{
+		WmClass:    wmClass,
+		WmClassKey: fold.AppKey(wmClass),
+		Purpose:    PurposeUnknown,
+	}
+}
+
+// TestPolicyAllowAbsentPassesX11Keys: without the extension the matcher sees
+// the X11-filled keys.
+func TestPolicyAllowAbsentPassesX11Keys(t *testing.T) {
+	matcher := &focusTestMatcher{}
+	policy := focusTestDefaultPolicy(matcher)
+	if ok, reason := policy.Allow(strictTestX11State("Gnome-terminal")); !ok {
+		t.Fatalf("Allow() = (false, %q) for an unmatched X11 identity", reason)
+	}
+	want := [][2]string{{"", "gnome-terminal"}}
+	if !reflect.DeepEqual(matcher.calls, want) {
+		t.Fatalf("MatchApp calls = %q, want %q", matcher.calls, want)
+	}
+}
+
+// TestPolicyAllowEmptyKeysSkipMatcher: a matcher that matches "" (a "*"
+// glob) must not exclude a state without any application identity, with
+// and without the extension.
+func TestPolicyAllowEmptyKeysSkipMatcher(t *testing.T) {
+	policy := focusTestDefaultPolicy(focusTestNoopMatcher{})
+	for _, st := range []State{
+		{Purpose: PurposeUnknown},
+		{EverAvailable: true, Purpose: PurposeUnknown},
+		focusTestState("", "", PurposeNormal),
+	} {
+		if ok, reason := policy.Allow(st); !ok {
+			t.Errorf("Allow(%+v) = (false, %q), want allowed", st, reason)
+		}
+	}
+	if !policy.Excluded.MatchApp("", "") {
+		t.Fatal("test matcher does not match empty keys")
+	}
+}
+
+func TestTextPurpose(t *testing.T) {
+	for p, want := range map[Purpose]bool{
+		PurposeNormal: true, "alpha": true, "digits": true, "number": true, "phone": true,
+		"url": true, "email": true, "name": true, "date": true, "time": true, "datetime": true,
+		PurposeTerminal: true,
+		PurposeNone:     false, PurposeUnknown: false, PurposePassword: false, PurposePIN: false,
+		"": false, "secret": false, "Normal": false,
+	} {
+		if got := TextPurpose(p); got != want {
+			t.Errorf("TextPurpose(%q) = %v, want %v", p, got, want)
+		}
+	}
+	// Every purpose the extension can report is classified: text, or one of
+	// the four non-text purposes.
+	for _, s := range []string{
+		"normal", "alpha", "digits", "number", "phone", "url", "email", "name",
+		"password", "pin", "terminal", "date", "time", "datetime", "none", "unknown",
+	} {
+		p := knownPurpose(s)
+		nonText := p == PurposePassword || p == PurposePIN || p == PurposeNone || p == PurposeUnknown
+		if TextPurpose(p) == nonText {
+			t.Errorf("TextPurpose(%q) = %v", s, !nonText)
+		}
+	}
+}
+
 func TestPolicyAllowNilPointerMatcher(t *testing.T) {
 	var matcher *focusTestMatcher
 	policy := focusTestDefaultPolicy(matcher)
@@ -187,12 +294,19 @@ func TestPolicyAllowNilPointerMatcher(t *testing.T) {
 
 func TestPolicyAllowDoesNotAllocate(t *testing.T) {
 	policy := focusTestDefaultPolicy(focusTestNoopMatcher{})
-	st := focusTestState("org.gnome.Ptyxis.desktop", "org.gnome.Ptyxis", PurposeNormal)
-	allocs := testing.AllocsPerRun(100, func() {
-		policy.Allow(st)
-	})
-	if allocs != 0 {
-		t.Fatalf("Allow() allocated %.1f times per run", allocs)
+	strict := policy
+	strict.RequirePurpose = true
+	editor := focusTestState("org.gnome.Ptyxis.desktop", "org.gnome.Ptyxis", PurposeNormal)
+	noneField := focusTestState("org.gnome.Ptyxis.desktop", "org.gnome.Ptyxis", PurposeNone)
+	x11 := strictTestX11State("Gnome-terminal")
+	for name, run := range map[string]func(){
+		"default": func() { policy.Allow(editor) },
+		"strict":  func() { strict.Allow(noneField) },
+		"absent":  func() { policy.Allow(x11) },
+	} {
+		if allocs := testing.AllocsPerRun(100, run); allocs != 0 {
+			t.Errorf("%s: Allow() allocated %.1f times per run", name, allocs)
+		}
 	}
 }
 

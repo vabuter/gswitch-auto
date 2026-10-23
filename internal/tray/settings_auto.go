@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -35,6 +36,9 @@ type autoSettings struct {
 	skipTerminalCheck *gtk.CheckButton
 	skipPasswordCheck *gtk.CheckButton
 	requireFocusCheck *gtk.CheckButton
+	// strictPurposeCheck shows the effective auto-strict-purpose value
+	// (SPEC-X11 §3.5); collectAutoSettings keeps an untouched "auto".
+	strictPurposeCheck *gtk.CheckButton
 
 	// Frame "Hotkeys" (settings_hotkeys.go).
 	keycapStyle *gtk.CssProvider
@@ -211,18 +215,23 @@ func (w *SettingsWindow) createAutoFrame() (*gtk.Frame, error) {
 	row++
 
 	for _, check := range []struct {
-		target **gtk.CheckButton
-		label  string
+		target  **gtk.CheckButton
+		label   string
+		tooltip string
 	}{
-		{&a.shortWordsCheck, strGACheckShortWords},
-		{&a.learnOnUndoCheck, strGACheckLearnOnUndo},
-		{&a.skipTerminalCheck, strGACheckSkipTerminal},
-		{&a.skipPasswordCheck, strGACheckSkipPassword},
-		{&a.requireFocusCheck, strGACheckRequireFocus},
+		{&a.shortWordsCheck, strGACheckShortWords, ""},
+		{&a.learnOnUndoCheck, strGACheckLearnOnUndo, ""},
+		{&a.skipTerminalCheck, strGACheckSkipTerminal, ""},
+		{&a.skipPasswordCheck, strGACheckSkipPassword, ""},
+		{&a.requireFocusCheck, strGACheckRequireFocus, ""},
+		{&a.strictPurposeCheck, strGACheckStrictPurpose, strGAHintStrictPurpose},
 	} {
 		button, err := gtk.CheckButtonNewWithLabel(tr(check.label))
 		if err != nil {
 			return nil, err
+		}
+		if check.tooltip != "" {
+			button.SetTooltipText(tr(check.tooltip))
 		}
 		*check.target = button
 		grid.Attach(button, 0, row, 2, 1)
@@ -338,6 +347,7 @@ func (w *SettingsWindow) setAutoSettingsWidgets(s userconfig.Settings) {
 	a.skipTerminalCheck.SetActive(s.SkipTerminal)
 	a.skipPasswordCheck.SetActive(s.SkipPassword)
 	a.requireFocusCheck.SetActive(s.RequireFocus)
+	a.strictPurposeCheck.SetActive(s.StrictPurposeFor(trayWaylandSession()))
 	for i, chord := range []userconfig.Chord{s.ToggleChord, s.SelectionChord} {
 		if hr := a.hotkeys[i]; hr != nil {
 			w.setHotkeyChord(hr, chord)
@@ -357,8 +367,35 @@ func (w *SettingsWindow) collectAutoSettings() userconfig.Settings {
 	s.SkipTerminal = a.skipTerminalCheck.GetActive()
 	s.SkipPassword = a.skipPasswordCheck.GetActive()
 	s.RequireFocus = a.requireFocusCheck.GetActive()
+	s.StrictPurpose = strictPurposeValue(a.loadedSettings, a.strictPurposeCheck.GetActive(), trayWaylandSession())
 	s.ToggleChord, s.SelectionChord = w.hotkeyChords()
 	return s
+}
+
+// trayWaylandSession reports a "positively Wayland" session of the tray
+// (WAYLAND_DISPLAY set or XDG_SESSION_TYPE=wayland, SPEC-X11 §3.3), the
+// input of Settings.StrictPurposeFor. The tray runs as the user in the
+// session, so its own environment is the session's.
+func trayWaylandSession() bool {
+	return os.Getenv("WAYLAND_DISPLAY") != "" ||
+		strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland")
+}
+
+// strictPurposeValue maps the strict checkbox back to an auto-strict-purpose
+// value. A checkbox that still equals the loaded setting's effective value
+// keeps the loaded value, so an untouched "auto" is never rewritten; a
+// toggled checkbox writes true or false.
+func strictPurposeValue(loaded userconfig.Settings, checked, wayland bool) string {
+	if checked != loaded.StrictPurposeFor(wayland) {
+		if checked {
+			return userconfig.StrictOn
+		}
+		return userconfig.StrictOff
+	}
+	if loaded.StrictPurpose == "" {
+		return userconfig.StrictAuto // zero value: StrictPurposeFor treats it as auto
+	}
+	return loaded.StrictPurpose
 }
 
 // autoSettingsDirty reports unsaved edits of the GUI-editable settings.
@@ -462,6 +499,12 @@ func autoReasonText(code string) string {
 		return tr(strGAReasonRootMode)
 	case "detector-error":
 		return tr(strGAReasonDetectorError)
+	case "layout-source-unsupported":
+		return tr(strGAReasonLayoutSourceUnsupported)
+	case "focus-source-off":
+		return tr(strGAReasonFocusSourceOff)
+	case "focus-extension-required":
+		return tr(strGAReasonFocusExtensionRequired)
 	default:
 		return code
 	}
@@ -505,8 +548,9 @@ func lastCorrectionText(st ipc.ClientStatus) string {
 }
 
 // autoNotices lists the warnings shown under the status: a persistence
-// failure, unsaved runtime state, a configuration directory mismatch (K22)
-// and configuration warnings of the tray and the daemon.
+// failure, unsaved runtime state, a configuration directory mismatch (K22),
+// configuration warnings of the tray and the daemon, and the strict-mode
+// hint while the daemon reports focus-extension-required (SPEC-X11 §3.5).
 func autoNotices(st ipc.ClientStatus, dir, persistError string, loadWarnings []string) []string {
 	var notices []string
 	if persistError != "" {
@@ -526,6 +570,9 @@ func autoNotices(st ipc.ClientStatus, dir, persistError string, loadWarnings []s
 	}
 	if len(warnings) > 0 {
 		notices = append(notices, fmt.Sprintf(tr(strGAConfigWarnings), strings.Join(warnings, "; ")))
+	}
+	if st.Connected && st.UnavailableReason == "focus-extension-required" {
+		notices = append(notices, tr(strGAHintStrictNoExtension))
 	}
 	return notices
 }

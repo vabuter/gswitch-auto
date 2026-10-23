@@ -16,6 +16,7 @@ type Policy struct {
 	SkipTerminal     bool       // auto-skip-terminal (true)
 	SkipWhenLocked   bool       // auto-skip-locked (true)
 	RequireExtension bool       // auto-require-focus (false)
+	RequirePurpose   bool       // auto-strict-purpose, effective value (SPEC-X11 §3.3)
 }
 
 // Denial reasons returned by Policy.Allow.
@@ -25,35 +26,58 @@ const (
 	ReasonFocusUnknown     = "focus-unknown"
 	ReasonPasswordField    = "password-field"
 	ReasonTerminal         = "terminal"
+	ReasonPurposeUnknown   = "purpose-unknown"
 	ReasonExcludedApp      = "excluded-app"
 )
 
+// TextPurpose reports a purpose that names a text field a user types words
+// into: normal, alpha, digits, number, phone, url, email, name, date, time,
+// datetime and terminal. It is false for none, unknown, password and pin
+// (terminal is then denied by SkipTerminal).
+func TextPurpose(p Purpose) bool {
+	switch p {
+	case PurposeNormal, "alpha", "digits", "number", "phone", "url", "email", "name",
+		"date", "time", "datetime", PurposeTerminal:
+		return true
+	default:
+		return false
+	}
+}
+
 // Allow reports whether automatic correction may act for st and, when it may
-// not, the reason. The rules apply in order: lock, extension availability
-// (fail-open unless RequireExtension), unknown focus while the extension is
-// available (fail closed: the application and field could be excluded),
-// password/PIN field, terminal field, excluded application. The matcher receives the pre-normalised AppKey and
-// WmClassKey, so Allow itself does not allocate.
+// not, the reason. The rules apply in order: lock; extension availability
+// (fail-open unless RequireExtension or RequirePurpose; an absent extension
+// then still goes through the exclusion list, because the application
+// identity may come from X11); while the extension is available: unknown
+// focus (fail closed: the application and field could be excluded),
+// password/PIN field, terminal field, and in strict mode a purpose that is
+// not a text purpose; finally the excluded application. The matcher receives
+// the pre-normalised AppKey and WmClassKey and is skipped when both are
+// empty (a glob such as "*" matches "" and must not exclude an unknown
+// application), so Allow itself does not allocate.
 func (p Policy) Allow(st State) (ok bool, reason string) {
 	if st.Locked && p.SkipWhenLocked {
 		return false, ReasonLocked
 	}
 	if !st.Available {
-		if p.RequireExtension {
+		if p.RequireExtension || p.RequirePurpose {
 			return false, ReasonFocusUnavailable
 		}
-		return true, ""
+	} else {
+		if st.FocusUnknown {
+			return false, ReasonFocusUnknown
+		}
+		if (st.Purpose == PurposePassword || st.Purpose == PurposePIN) && p.SkipPassword {
+			return false, ReasonPasswordField
+		}
+		if st.Purpose == PurposeTerminal && p.SkipTerminal {
+			return false, ReasonTerminal
+		}
+		if p.RequirePurpose && !TextPurpose(st.Purpose) {
+			return false, ReasonPurposeUnknown
+		}
 	}
-	if st.FocusUnknown {
-		return false, ReasonFocusUnknown
-	}
-	if (st.Purpose == PurposePassword || st.Purpose == PurposePIN) && p.SkipPassword {
-		return false, ReasonPasswordField
-	}
-	if st.Purpose == PurposeTerminal && p.SkipTerminal {
-		return false, ReasonTerminal
-	}
-	if p.Excluded != nil && p.Excluded.MatchApp(st.AppKey, st.WmClassKey) {
+	if (st.AppKey != "" || st.WmClassKey != "") && p.Excluded != nil && p.Excluded.MatchApp(st.AppKey, st.WmClassKey) {
 		return false, ReasonExcludedApp
 	}
 	return true, ""

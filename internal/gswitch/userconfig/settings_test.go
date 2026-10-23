@@ -81,6 +81,7 @@ func TestDefaultSettings(t *testing.T) {
 		KeySkipPassword:        "true",
 		KeySkipTerminal:        "true",
 		KeySkipLocked:          "true",
+		KeyStrictPurpose:       "auto",
 		KeyToggleChord:         "42+54",
 		KeySelectionChord:      "42+97+100",
 		KeyExposeWords:         "true",
@@ -160,6 +161,7 @@ var ucTestNonDefault = map[string]string{
 	KeySkipPassword:        "false",
 	KeySkipTerminal:        "false",
 	KeySkipLocked:          "false",
+	KeyStrictPurpose:       "true",
 	KeyToggleChord:         "29+88",
 	KeySelectionChord:      "none",
 	KeyExposeWords:         "false",
@@ -238,6 +240,7 @@ func TestInvalidValuesFallBackToDefault(t *testing.T) {
 		KeySkipPassword:        {"x"},
 		KeySkipTerminal:        {"x"},
 		KeySkipLocked:          {"x"},
+		KeyStrictPurpose:       {"maybe", "", "strict", "2"},
 		KeyToggleChord:         {"42+30", "42", "42+abc"},
 		KeySelectionChord:      {"42+57", "29+42+54+56+97"},
 		KeyExposeWords:         {"x"},
@@ -328,6 +331,103 @@ func TestBoolSpellings(t *testing.T) {
 	}
 }
 
+// TestStrictPurposeSpellings: auto-strict-purpose accepts auto and every
+// boolean spelling and is stored canonically (auto, true, false).
+func TestStrictPurposeSpellings(t *testing.T) {
+	for v, want := range map[string]string{
+		"auto": StrictAuto, "AUTO": StrictAuto, "Auto": StrictAuto,
+		"true": StrictOn, "TRUE": StrictOn, "yes": StrictOn, "on": StrictOn, "1": StrictOn,
+		"false": StrictOff, "False": StrictOff, "no": StrictOff, "off": StrictOff, "0": StrictOff,
+	} {
+		s, warnings := parseAutoConf(KeyStrictPurpose + "=" + v)
+		if len(warnings) != 0 || s.StrictPurpose != want {
+			t.Errorf("%s=%s => %q (warnings %q), want %q", KeyStrictPurpose, v, s.StrictPurpose, warnings, want)
+		}
+		if got := s.Values()[KeyStrictPurpose]; got != want {
+			t.Errorf("%s=%s: Values() = %q, want %q", KeyStrictPurpose, v, got, want)
+		}
+	}
+	for _, v := range []string{"maybe", "", "strict"} {
+		s, warnings := parseAutoConf(KeyStrictPurpose + "=" + v)
+		if s.StrictPurpose != StrictAuto || !ucTestHasWarning(warnings, KeyStrictPurpose, "using default auto") {
+			t.Errorf("%s=%q => %q, warnings %q", KeyStrictPurpose, v, s.StrictPurpose, warnings)
+		}
+	}
+
+	// Update writes the canonical spelling under the template comment.
+	dir := ucTestDir(t)
+	if err := Update(dir, map[string]string{KeyStrictPurpose: "yes"}); err != nil {
+		t.Fatal(err)
+	}
+	text := ucTestRead(t, dir, AutoConfName)
+	if !strings.Contains(text, "# "+KeyStrictPurpose+"=auto\n"+KeyStrictPurpose+"=true\n") {
+		t.Fatalf("auto.conf after Update:\n%s", text)
+	}
+	if c := ucTestLoad(t, dir); c.Settings.StrictPurpose != StrictOn || len(c.Warnings) != 0 {
+		t.Fatalf("loaded %q, warnings %q", c.Settings.StrictPurpose, c.Warnings)
+	}
+	if err := Update(dir, map[string]string{KeyStrictPurpose: "sometimes"}); err == nil {
+		t.Fatal("Update accepted an invalid strict value")
+	}
+}
+
+// TestStrictPurposeFor: auto is strict unless the session is positively
+// Wayland; explicit values ignore the session; the zero value is auto.
+func TestStrictPurposeFor(t *testing.T) {
+	for _, tt := range []struct {
+		value   string
+		wayland bool
+		want    bool
+	}{
+		{StrictAuto, true, false},
+		{StrictAuto, false, true},
+		{"", true, false},
+		{"", false, true},
+		{StrictOn, true, true},
+		{StrictOn, false, true},
+		{StrictOff, true, false},
+		{StrictOff, false, false},
+	} {
+		s := DefaultSettings()
+		s.StrictPurpose = tt.value
+		if got := s.StrictPurposeFor(tt.wayland); got != tt.want {
+			t.Errorf("StrictPurpose %q, wayland=%v: StrictPurposeFor = %v, want %v", tt.value, tt.wayland, got, tt.want)
+		}
+	}
+	if !DefaultSettings().StrictPurposeFor(false) || DefaultSettings().StrictPurposeFor(true) {
+		t.Fatal("DefaultSettings is not auto")
+	}
+}
+
+func TestLayoutSourceX11Accepted(t *testing.T) {
+	s, warnings := parseAutoConf(KeyLayoutSource + "=X11\n")
+	if len(warnings) != 0 || s.LayoutSource != SourceX11 {
+		t.Fatalf("layout-source=X11 => %q, warnings %q", s.LayoutSource, warnings)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	dir := ucTestDir(t)
+	if err := Update(dir, map[string]string{KeyLayoutSource: SourceX11}); err != nil {
+		t.Fatal(err)
+	}
+	if c := ucTestLoad(t, dir); c.Settings.LayoutSource != SourceX11 {
+		t.Fatalf("loaded layout-source = %q", c.Settings.LayoutSource)
+	}
+}
+
+func TestTemplateDocumentsStrictPurposeAndX11(t *testing.T) {
+	for _, want := range []string{
+		"# " + KeyStrictPurpose + "=auto\n",
+		"layout-source auto|ibus|x11|none",
+		"Strict purpose mode",
+	} {
+		if !strings.Contains(autoConfTemplate, want) {
+			t.Errorf("template lacks %q", want)
+		}
+	}
+}
+
 func TestAutoConfSizeCap(t *testing.T) {
 	dir := ucTestDir(t)
 	text := "auto-enabled=true\n" + strings.Repeat("# padding\n", MaxAutoConfBytes/10+1)
@@ -372,6 +472,7 @@ func TestSettingsValidate(t *testing.T) {
 		"undo count":      func(s *Settings) { s.LearnUndoCount = 0 },
 		"focus source":    func(s *Settings) { s.FocusSource = "x" },
 		"layout source":   func(s *Settings) { s.LayoutSource = "" },
+		"strict purpose":  func(s *Settings) { s.StrictPurpose = "" },
 		"hint timeout":    func(s *Settings) { s.LayoutHintTimeoutMs = 50 },
 		"text key chord":  func(s *Settings) { s.ToggleChord = Chord{42, 30} },
 		"one key chord":   func(s *Settings) { s.SelectionChord = Chord{42} },
@@ -410,11 +511,12 @@ func TestSettingsEqualAndDiff(t *testing.T) {
 	b.MinLetters = 4
 	b.SelectionChord = nil
 	b.AutoEnabled = true
+	b.StrictPurpose = StrictOn
 	if a.Equal(b) {
 		t.Fatal("different settings reported equal")
 	}
 	d := DiffSettings(a, b)
-	want := map[string]string{KeyMinLetters: "4", KeySelectionChord: "none", KeyAutoEnabled: "true"}
+	want := map[string]string{KeyMinLetters: "4", KeySelectionChord: "none", KeyAutoEnabled: "true", KeyStrictPurpose: "true"}
 	if len(d) != len(want) {
 		t.Fatalf("DiffSettings = %v, want %v", d, want)
 	}
