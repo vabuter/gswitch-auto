@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Development helper: install the gswitch-focus GNOME Shell extension for the
-# current user from this checkout. The RPM installs the system copy under
+# current user from this checkout. The RPM (ESM tree, GNOME Shell 50) and the
+# .deb (legacy tree, GNOME Shell 43/44) install the system copy under
 # /usr/share/gnome-shell/extensions; a user copy installed here shadows it.
 #
 #   scripts/install-extension.sh             pack and install a copy (gnome-extensions)
 #   scripts/install-extension.sh --link      symlink the checkout (edit in place)
 #   scripts/install-extension.sh --uninstall remove the user copy
+#   scripts/install-extension.sh --legacy    use shell-extension/legacy/<uuid> (GNOME 43/44)
+#                                            with install or --link
 #
-# GNOME Shell on Wayland loads new or changed extension code only at login, so
-# every install or code change needs a logout/login.
+# GNOME Shell loads new or changed extension code only at login, so every
+# install or code change needs a logout/login (on X11, Alt+F2 `r` restarts
+# the Shell in place instead).
 set -euo pipefail
 
 UUID="gswitch-focus@vabuter.github.io"
@@ -18,6 +22,8 @@ SCHEMA="org.gnome.shell"
 SYSTEM_DIR="/usr/share/gnome-shell/extensions/$UUID"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ESM tree by default; --legacy selects shell-extension/legacy/$UUID.
+VARIANT="esm"
 SRC_DIR="$REPO_ROOT/shell-extension/$UUID"
 
 DATA_HOME="${XDG_DATA_HOME:-}"
@@ -28,7 +34,7 @@ esac
 DEST_DIR="$DATA_HOME/gnome-shell/extensions/$UUID"
 
 usage() {
-    sed -n '2,12s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
+    sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
 }
 
 have() {
@@ -108,14 +114,14 @@ install_copy() {
         mkdir -p "$DEST_DIR"
         cp "$SRC_DIR/metadata.json" "$SRC_DIR/extension.js" "$DEST_DIR/"
     fi
-    echo "Installed $UUID to $DEST_DIR."
+    echo "Installed $UUID ($VARIANT tree) to $DEST_DIR."
 }
 
 install_link() {
     remove_user_copy
     mkdir -p "$(dirname "$DEST_DIR")"
     ln -s "$SRC_DIR" "$DEST_DIR"
-    echo "Linked $DEST_DIR -> $SRC_DIR."
+    echo "Linked $DEST_DIR -> $SRC_DIR ($VARIANT tree)."
 }
 
 uninstall() {
@@ -138,8 +144,11 @@ uninstall() {
 print_notice() {
     cat <<EOF
 
-Log out and back in: GNOME Shell on Wayland loads new or changed extension
-code only at login. Then verify:
+Log out and back in: GNOME Shell loads new or changed extension code only at
+login (on X11, Alt+F2 then \`r\` restarts the Shell in place instead). The
+installed tree is the $VARIANT variant; GNOME Shell 45+ needs the ESM tree,
+43/44 the legacy one (--legacy), or the extension shows as OUT_OF_DATE. Then
+verify:
 
   gnome-extensions info $UUID
   gdbus call --session --dest $BUS_NAME \\
@@ -154,6 +163,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
     --link) mode="link" ;;
     --uninstall) mode="uninstall" ;;
+    --legacy)
+        VARIANT="legacy"
+        SRC_DIR="$REPO_ROOT/shell-extension/legacy/$UUID"
+        ;;
     -h | --help)
         usage
         exit 0
