@@ -405,15 +405,3 @@ func formatLayouts(table []Layout) string {
 	}
 	return strings.Join(parts, ",")
 }
-
-// sleepCtx waits for d; ok is false when ctx ends first.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
