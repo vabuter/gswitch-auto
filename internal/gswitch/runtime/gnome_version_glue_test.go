@@ -32,7 +32,8 @@ func gvTestSetShellInfo(t *testing.T, info layoutstate.ShellInfo) {
 
 // gvTestSwitcher builds a debug Switcher (log to stdout) in a GNOME Wayland
 // session with the us/ru pair and a hermetic IBus address environment, so the
-// IBus source can never reach a real ibus-daemon.
+// IBus source can never reach a real ibus-daemon. Tests build the tracker
+// with gvTestInitTracker (selection + initTracker, as initFork does).
 func gvTestSwitcher(t *testing.T) *Switcher {
 	t.Helper()
 	origEuid := forkGeteuid
@@ -58,6 +59,13 @@ func gvTestSettings(layoutSource string) userconfig.Settings {
 	st := userconfig.DefaultSettings()
 	st.LayoutSource = layoutSource
 	return st
+}
+
+// gvTestInitTracker runs the two initFork steps that build the tracker: the
+// platform selection (which probes and logs) and initTracker.
+func gvTestInitTracker(s *Switcher, st userconfig.Settings) {
+	s.initPlatform(st)
+	s.initTracker(st)
 }
 
 // gvTestResyncErr runs a tracker resync whose every leg fails: the only push
@@ -86,7 +94,7 @@ func TestInitTrackerShellBelowThresholdDisablesIBusSource(t *testing.T) {
 		t.Run(version, func(t *testing.T) {
 			gvTestSetShellInfo(t, layoutstate.ShellInfo{Version: version})
 			s := gvTestSwitcher(t)
-			out := captureStdout(t, func() { s.initTracker(gvTestSettings("auto")) })
+			out := captureStdout(t, func() { gvTestInitTracker(s, gvTestSettings("auto")) })
 			if s.tracker != nil {
 				t.Fatal("tracker built although GNOME Shell reports a fixed IBus engine")
 			}
@@ -104,7 +112,7 @@ func TestInitTrackerShellBelowThresholdDisablesIBusSource(t *testing.T) {
 func TestInitTrackerProbeErrorGuardsIBusSource(t *testing.T) {
 	gvTestSetShellInfo(t, layoutstate.ShellInfo{Err: layoutstate.ErrShellUnavailable})
 	s := gvTestSwitcher(t)
-	out := captureStdout(t, func() { s.initTracker(gvTestSettings("auto")) })
+	out := captureStdout(t, func() { gvTestInitTracker(s, gvTestSettings("auto")) })
 	if s.tracker == nil {
 		t.Fatal("tracker nil although the probe only failed (should be guarded)")
 	}
@@ -128,7 +136,7 @@ func TestInitTrackerProbeErrorGuardsIBusSource(t *testing.T) {
 func TestInitTrackerShellTrackingKeepsIBusSource(t *testing.T) {
 	// The seam's default (50.6) is in force.
 	s := gvTestSwitcher(t)
-	out := captureStdout(t, func() { s.initTracker(gvTestSettings("auto")) })
+	out := captureStdout(t, func() { gvTestInitTracker(s, gvTestSettings("auto")) })
 	if s.tracker == nil {
 		t.Fatal("tracker nil with GNOME Shell 50.6")
 	}
@@ -161,7 +169,7 @@ func TestInitTrackerForcedIBusSourceWarns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			gvTestSetShellInfo(t, tt.info)
 			s := gvTestSwitcher(t)
-			out := captureStdout(t, func() { s.initTracker(gvTestSettings("ibus")) })
+			out := captureStdout(t, func() { gvTestInitTracker(s, gvTestSettings("ibus")) })
 			if s.tracker == nil {
 				t.Fatal("tracker nil although layout-source=ibus forces the source")
 			}
@@ -188,7 +196,7 @@ func TestInitTrackerProbeSkippedWhenSourceDisabled(t *testing.T) {
 	}
 	t.Cleanup(func() { forkProbeShellVersion = orig })
 	s := gvTestSwitcher(t)
-	s.initTracker(gvTestSettings("none"))
+	captureStdout(t, func() { gvTestInitTracker(s, gvTestSettings("none")) })
 	if s.tracker != nil || calls != 0 {
 		t.Fatalf("tracker=%v probes=%d with layout-source=none, want nil and 0", s.tracker != nil, calls)
 	}

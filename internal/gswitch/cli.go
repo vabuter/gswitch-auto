@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arumata/gswitch/internal/gswitch/focus"
 	"github.com/arumata/gswitch/internal/gswitch/layoutstate"
 	gsruntime "github.com/arumata/gswitch/internal/gswitch/runtime"
 )
@@ -55,6 +56,8 @@ func Execute(args []string, buildVersion string) {
 		os.Exit(gsruntime.RunAutoCheck(args[2:], os.Stdout, os.Stderr))
 	case "--layout-state":
 		os.Exit(runLayoutState(args[2:], os.Stdout, os.Stderr))
+	case "--focus-state":
+		os.Exit(runFocusState(args[2:], os.Stdout, os.Stderr))
 	case "-h", "--help":
 		runHelp(version)
 	default:
@@ -115,21 +118,43 @@ func runHelp(version string) {
 	fmt.Println()
 	fmt.Println("Automatic correction (gswitch-auto):")
 	fmt.Println("   --auto-check TEXT [--shown LAYOUT]   judge a word as typed in LAYOUT (JSON output)")
-	fmt.Println("   --layout-state [--watch SECONDS]     show the IBus layout state and follow changes")
-	fmt.Println("                                        for SECONDS (default 10, 0 = no watch)")
+	fmt.Println("   --layout-state [--watch SECONDS]     show the layout source the daemon would use")
+	fmt.Println("                  [--source auto|ibus|x11]  (IBus engine or X11 XKB group), its state,")
+	fmt.Println("                                        and follow changes for SECONDS (default 10,")
+	fmt.Println("                                        0 = no watch); --source forces one source")
+	fmt.Println("   --focus-state [--watch SECONDS]      show the focus sources (Shell extension, X11")
+	fmt.Println("                                        active window), the merged state and the")
+	fmt.Println("                                        policy decision; follow changes for SECONDS")
 }
 
-// defaultLayoutStateWatch is how long --layout-state follows changes when
-// --watch is not given.
-const defaultLayoutStateWatch = 10 * time.Second
+// defaultDiagWatch is how long --layout-state and --focus-state follow
+// changes when --watch is not given.
+const defaultDiagWatch = 10 * time.Second
 
-// runLayoutState implements --layout-state [--watch SECONDS]: read-only IBus
-// layout diagnostics that need neither root nor input devices. It returns the
-// process exit code.
+// Values of --layout-state --source.
+const (
+	diagSourceAuto = "auto"
+	diagSourceIBus = layoutstate.SourceIBus
+	diagSourceX11  = layoutstate.SourceX11
+)
+
+// diagArgs are the parsed arguments of --layout-state and --focus-state.
+type diagArgs struct {
+	watch  time.Duration
+	source string // --layout-state only: diagSourceAuto (default), diagSourceIBus or diagSourceX11
+}
+
+// runLayoutState implements --layout-state [--watch SECONDS] [--source
+// auto|ibus|x11]: read-only layout diagnostics that need neither root nor
+// input devices. It prints the session, the GNOME Shell version and the
+// source selection the daemon would make (SPEC-X11 §2.1), then runs the
+// X11 and/or IBus diagnostics of the selected source (--source forces one).
+// It returns the process exit code: 1 when the selected source cannot be
+// reached or no source exists for this session.
 func runLayoutState(args []string, stdout, stderr io.Writer) int {
-	watch, err := parseLayoutStateArgs(args)
+	opts, err := parseDiagArgs(args, true)
 	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\nusage: gswitch --layout-state [--watch SECONDS]\n", err)
+		fmt.Fprintf(stderr, "Error: %v\nusage: gswitch --layout-state [--watch SECONDS] [--source auto|ibus|x11]\n", err)
 		return 1
 	}
 	layouts, err := layoutStatePair()
@@ -138,36 +163,175 @@ func runLayoutState(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := layoutstate.RunDiagnostics(ctx, stdout, layoutstate.AddressEnvFromProcess(), layouts, watch); err != nil {
+	sel, err := gsruntime.PlatformForDiagnostics(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+	}
+	printPlatform(stdout, sel, stderr)
+	runX11, runIBus, note := layoutStateSources(sel, opts.source)
+	if note != "" {
+		fmt.Fprintln(stdout, note)
+	}
+	if !runX11 && !runIBus {
+		fmt.Fprintf(stderr, "Error: no layout source for this session (%s)\n", sel.LayoutReason)
+		return 1
+	}
+	code := 0
+	if runX11 {
+		if err := layoutstate.RunX11Diagnostics(ctx, stdout, "", layouts, opts.watch); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			code = 1
+		}
+	}
+	if runIBus {
+		if err := layoutstate.RunDiagnostics(ctx, stdout, layoutstate.AddressEnvFromProcess(), layouts, opts.watch); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			code = 1
+		}
+	}
+	return code
+}
+
+// layoutStateSources decides which diagnostics --layout-state runs: the
+// daemon's selection, or the source forced with --source (with a note when
+// the daemon would not use it).
+func layoutStateSources(sel gsruntime.PlatformSelection, source string) (runX11, runIBus bool, note string) {
+	switch source {
+	case diagSourceX11:
+		switch {
+		case sel.LayoutX11:
+		case sel.Wayland:
+			note = "Note: X11 layout source forced in a Wayland session; Xwayland never sees GNOME's layout changes"
+		default:
+			note = "Note: X11 layout source forced; the daemon would not use it in this session"
+		}
+		return true, false, note
+	case diagSourceIBus:
+		switch {
+		case sel.LayoutIBus:
+		case sel.Shell.Version != "" && !layoutstate.IBusEngineTracksLayout(sel.Shell.Version):
+			note = fmt.Sprintf("Note: IBus layout source disabled for GNOME Shell %s (it reports a fixed engine for XKB sources; needs 49.3+); forced for this run",
+				sel.Shell.Version)
+		default:
+			note = "Note: IBus layout source forced; the daemon would not use it in this session"
+		}
+		return false, true, note
+	default:
+		if sel.LayoutIBusGuarded {
+			note = fmt.Sprintf("Note: IBus layout source guarded: GNOME Shell version unknown (%v); the daemon keeps probing", sel.Shell.Err)
+		}
+		return sel.LayoutX11, sel.LayoutIBus, note
+	}
+}
+
+// printPlatform prints the session facts and the daemon's source selection
+// (with the effective strict-purpose value of ~/.config/gswitch) and
+// returns the focus policy; a configuration problem goes to stderr.
+func printPlatform(w io.Writer, sel gsruntime.PlatformSelection, stderr io.Writer) focus.Policy {
+	policy, err := gsruntime.FocusPolicyForDiagnostics(sel.Wayland)
+	if err != nil {
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+	}
+	fmt.Fprintf(w, "Session: %s (DISPLAY=%q, WAYLAND_DISPLAY=%q, XDG_SESSION_TYPE=%q)\n",
+		sel.SessionName(), os.Getenv("DISPLAY"), os.Getenv("WAYLAND_DISPLAY"), os.Getenv("XDG_SESSION_TYPE"))
+	desktop := "other"
+	if sel.GNOME {
+		desktop = "GNOME"
+	}
+	fmt.Fprintf(w, "Desktop: %s\n", desktop)
+	switch {
+	case sel.Shell.Err != nil:
+		fmt.Fprintf(w, "GNOME Shell: unavailable (%v)\n", sel.Shell.Err)
+	case sel.Shell.Version != "":
+		fmt.Fprintf(w, "GNOME Shell: %s\n", sel.Shell.Version)
+	default:
+		fmt.Fprintf(w, "GNOME Shell: not probed\n")
+	}
+	fmt.Fprintf(w, "Daemon selection: %s\n", sel.Summary(policy.RequirePurpose))
+	for _, warning := range sel.Warnings {
+		fmt.Fprintf(w, "Warning: %s\n", warning)
+	}
+	return policy
+}
+
+// runFocusState implements --focus-state [--watch SECONDS]: read-only focus
+// diagnostics with the sources the daemon would start (SPEC-X11 §2.2) and the
+// focus policy of ~/.config/gswitch. It returns the process exit code.
+func runFocusState(args []string, stdout, stderr io.Writer) int {
+	opts, err := parseDiagArgs(args, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\nusage: gswitch --focus-state [--watch SECONDS]\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	sel, err := gsruntime.PlatformForDiagnostics(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+	}
+	policy := printPlatform(stdout, sel, stderr)
+	err = focus.RunDiagnostics(ctx, stdout, focus.DiagOptions{
+		ExtensionEnabled: sel.FocusExt,
+		X11Enabled:       sel.FocusX11,
+		Policy:           policy,
+		Watch:            opts.watch,
+	})
+	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
-// parseLayoutStateArgs parses "--watch SECONDS" or "--watch=SECONDS".
-func parseLayoutStateArgs(args []string) (time.Duration, error) {
-	watch := defaultLayoutStateWatch
+// parseDiagArgs parses "--watch SECONDS" / "--watch=SECONDS" and, when
+// allowSource is true, "--source NAME" / "--source=NAME" (auto, ibus, x11).
+func parseDiagArgs(args []string, allowSource bool) (diagArgs, error) {
+	opts := diagArgs{watch: defaultDiagWatch, source: diagSourceAuto}
 	for i := 0; i < len(args); i++ {
-		value, ok := strings.CutPrefix(args[i], "--watch=")
-		switch {
-		case ok:
-		case args[i] == "--watch":
-			if i+1 >= len(args) {
-				return 0, errors.New("--watch needs a number of seconds")
+		name, value, err := diagArgValue(args, &i)
+		if err != nil {
+			return opts, err
+		}
+		switch name {
+		case "--watch":
+			seconds, err := strconv.ParseFloat(value, 64)
+			if err != nil || seconds < 0 || seconds > 24*60*60 {
+				return opts, fmt.Errorf("invalid --watch value %q", value)
 			}
-			i++
-			value = args[i]
-		default:
-			return 0, fmt.Errorf("unknown argument %q", args[i])
+			opts.watch = time.Duration(seconds * float64(time.Second))
+		case "--source":
+			if !allowSource {
+				return opts, errors.New("unknown argument \"--source\"")
+			}
+			switch value {
+			case diagSourceAuto, diagSourceIBus, diagSourceX11:
+				opts.source = value
+			default:
+				return opts, fmt.Errorf("invalid --source value %q (auto, ibus, x11)", value)
+			}
 		}
-		seconds, err := strconv.ParseFloat(value, 64)
-		if err != nil || seconds < 0 || seconds > 24*60*60 {
-			return 0, fmt.Errorf("invalid --watch value %q", value)
-		}
-		watch = time.Duration(seconds * float64(time.Second))
 	}
-	return watch, nil
+	return opts, nil
+}
+
+// diagArgValue reads the option at args[*i] as "--name=value" or "--name
+// value" (advancing *i) for the options --watch and --source.
+func diagArgValue(args []string, i *int) (name, value string, err error) {
+	arg := args[*i]
+	for _, opt := range []string{"--watch", "--source"} {
+		if v, ok := strings.CutPrefix(arg, opt+"="); ok {
+			return opt, v, nil
+		}
+		if arg != opt {
+			continue
+		}
+		if *i+1 >= len(args) {
+			return "", "", fmt.Errorf("%s needs a value", opt)
+		}
+		*i++
+		return opt, args[*i], nil
+	}
+	return "", "", fmt.Errorf("unknown argument %q", arg)
 }
 
 // layoutStatePair returns the layout pair as the daemon resolves it:

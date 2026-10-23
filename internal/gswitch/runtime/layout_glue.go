@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"slices"
 	"time"
 
@@ -9,66 +8,67 @@ import (
 	"github.com/arumata/gswitch/internal/gswitch/userconfig"
 )
 
-// gswitch-auto: glue between the Switcher and the IBus layout tracker
-// (layoutstate). Nothing here ever clears the converter buffer (C5).
+// gswitch-auto: glue between the Switcher and the layout tracker
+// (layoutstate: IBus engine or X11 XKB group). Nothing here ever clears the
+// converter buffer (C5).
 
 // forkProbeShellVersion reads the GNOME Shell version that gates the IBus
-// layout source (SPEC-X11 §3.1.1). Test seam like forkGeteuid: the package
-// tests replace it so that no test asks the live session bus.
+// layout source (SPEC-X11 §3.1.1); selectPlatform calls it. Test seam like
+// forkGeteuid: the package tests replace it so that no test asks the live
+// session bus.
 var forkProbeShellVersion = layoutstate.ProbeShellVersion
 
 // forkShellProbeTimeout bounds the one-shot GNOME Shell version probe of
-// initTracker.
+// selectPlatform.
 const forkShellProbeTimeout = 2 * time.Second
 
-// initTracker builds the layout tracker when the layout pair is known and
-// layout-source permits it (auto in a GNOME session, or ibus; never as root).
-// The IBus source is only trusted on GNOME Shell 49.3+, where the IBus engine
-// follows the XKB source: below that the tracker is not built (auto) or the
-// forced source is logged with a warning (ibus); while the version cannot be
-// read the source is guarded and keeps probing. The tracker is started by
-// startFork.
+// initTracker builds the layout tracker from the platform selection
+// (s.platform, SPEC-X11 §2.1) when the layout pair is known: the X11 XKB
+// source in X11 GNOME sessions (or with layout-source=x11), the IBus source
+// on GNOME Shell 49.3+ (guarded while the version cannot be read, forced
+// with a warning by layout-source=ibus), never both; the gsettings resyncer
+// only on GNOME. Without a source the tracker stays nil and the manual path
+// runs exactly the upstream code. The tracker is started by startFork.
 func (s *Switcher) initTracker(st userconfig.Settings) {
 	if len(s.layoutSpecs) != 2 {
 		s.logDebug("layout tracker: no layout pair")
 		return
 	}
-	if !layoutstate.IBusSourceEnabled(st.LayoutSource, s.sessionEnv, forkGeteuid()) {
-		s.logDebug("layout tracker: disabled (layout-source=%s)", st.LayoutSource)
+	sel := s.platform
+	if !sel.LayoutIBus && !sel.LayoutX11 {
+		s.logDebug("layout tracker: disabled (layout-source=%s, %s)", st.LayoutSource, sel.LayoutReason)
 		return
 	}
-	// WPX7: X11 source selection goes here (selectPlatform takes over this
-	// probe and the decision below through s.platform).
-	probeCtx, cancel := context.WithTimeout(context.Background(), forkShellProbeTimeout)
-	info := forkProbeShellVersion(probeCtx)
-	cancel()
-	ok, deferred, reason, warning := layoutstate.IBusSourceAllowed(st.LayoutSource, info)
-	if warning != "" {
-		s.log("Warning: %s", warning)
-	}
-	if !ok && !deferred {
-		s.log("IBus layout source disabled: GNOME Shell %s reports a fixed engine for XKB sources (needs 49.3+)", info.Version)
-		s.logDebug("layout tracker: disabled (%s)", reason)
-		return
+	pair := [2]layoutstate.Layout{
+		{Name: s.layoutSpecs[0].Name, Variant: s.layoutSpecs[0].Variant},
+		{Name: s.layoutSpecs[1].Name, Variant: s.layoutSpecs[1].Variant},
 	}
 	t := layoutstate.New(layoutstate.Options{
-		Layouts: [2]layoutstate.Layout{
-			{Name: s.layoutSpecs[0].Name, Variant: s.layoutSpecs[0].Variant},
-			{Name: s.layoutSpecs[1].Name, Variant: s.layoutSpecs[1].Variant},
-		},
+		Layouts:     pair,
 		HintTimeout: time.Duration(st.LayoutHintTimeoutMs) * time.Millisecond,
 		Logger:      s.log,
 		DebugLogger: s.logDebug,
 	})
-	ibus := layoutstate.NewIBusSource(layoutstate.AddressEnvFromProcess(), s.log)
-	if deferred {
-		s.log("IBus layout source deferred: GNOME Shell version unknown (%v), probing in the background", info.Err)
-		t.AddSource(layoutstate.NewGuardedIBusSource(ibus, s.log))
-	} else {
-		s.logDebug("layout tracker: IBus source enabled (GNOME Shell %s)", info.Version)
-		t.AddSource(ibus)
+	if sel.LayoutX11 {
+		s.logDebug("layout tracker: X11 XKB source enabled")
+		t.AddSource(layoutstate.NewX11Source(layoutstate.X11Options{
+			Display:  x11DisplayFor(s.sessionEnv),
+			Fallback: pair,
+			Logf:     s.log,
+		}))
 	}
-	t.AddResync(layoutstate.NewGSettingsResync(s.sessionEnv))
+	if sel.LayoutIBus {
+		ibus := layoutstate.NewIBusSource(layoutstate.AddressEnvFromProcess(), s.log)
+		if sel.LayoutIBusGuarded {
+			t.AddSource(layoutstate.NewGuardedIBusSource(ibus, s.log))
+		} else {
+			s.logDebug("layout tracker: IBus source enabled (GNOME Shell %s)", sel.Shell.Version)
+			t.AddSource(ibus)
+		}
+	}
+	if sel.GNOME {
+		t.AddResync(layoutstate.NewGSettingsResync(s.sessionEnv))
+	}
 	t.OnChange(func(state layoutstate.State) {
 		s.enqueueControl(func() { s.onLayoutState(state) })
 		s.pushStatus()

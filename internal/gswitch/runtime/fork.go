@@ -90,7 +90,11 @@ type forkState struct {
 	tracker    *layoutstate.Tracker // nil: layout-source=none, non-GNOME session, root mode, no layout pair
 	lsKeysDown map[uint16]bool      // layout-switch keys physically down (Run goroutine only)
 
-	focusClient *focus.Client // nil when focus-source=off or root
+	platform PlatformSelection // source selection of this start (written once in initFork, read-only after)
+
+	focusMerged *focus.Merged    // nil when focus-source=off or root (no focus source at all)
+	focusClient *focus.Client    // nil when the extension client is not started
+	focusX11    *focus.X11Source // nil outside X11 sessions
 	focusPolicy atomic.Pointer[focus.Policy]
 
 	detector    *lang.Detector
@@ -110,14 +114,18 @@ type forkState struct {
 }
 
 // initFork runs at the end of NewSwitcher. It reads the user configuration
-// (read-only), builds the detector, the layout tracker, the focus client and
-// the auto engine, but starts no goroutine. It never fails: every missing
+// (read-only), selects the platform sources, builds the detector, the layout
+// tracker, the focus sources and the auto engine, but starts no goroutine. It never fails: every missing
 // dependency only leaves automatic correction unavailable.
 func (s *Switcher) initFork() {
 	s.controlChan = make(chan func(), forkControlQueue)
 	cfg := s.loadUserConfig()
 	s.startSettings = cfg.Settings
-	s.focusPolicy.Store(forkFocusPolicy(cfg))
+	// The platform selection comes right after the configuration and before
+	// the focus policy, which derives its strict-purpose value from it
+	// (SPEC-X11 §3.4, pinned by TestInitForkPlatformBeforePolicy).
+	s.initPlatform(cfg.Settings)
+	s.focusPolicy.Store(forkFocusPolicy(cfg, s.platform.Wayland))
 	s.applyChords(nil, cfg.Settings)
 	s.initDetector(cfg)
 	s.initTracker(cfg.Settings)
@@ -127,15 +135,31 @@ func (s *Switcher) initFork() {
 		s.layoutReaderFn = newCompositeLayoutReader(s.tracker, s.sessionEnv)
 		s.onOwnSwitch = s.noteOwnSwitch
 	}
-	s.initFocusClient(cfg.Settings)
+	s.initFocusClient()
 	s.EnableAuto()
 	s.autoEnabled.Store(cfg.Settings.AutoEnabled)
 	s.fileAutoEnabled = cfg.Settings.AutoEnabled
 }
 
+// initPlatform runs the source selection for the start settings and logs
+// it: the configuration warnings, the note about a disabled or deferred
+// layout source, and the one-line summary. s.platform is written here and
+// only read afterwards (control goroutine, status snapshots, reloads), so
+// it needs no lock.
+func (s *Switcher) initPlatform(st userconfig.Settings) {
+	s.platform = selectPlatform(st, s.sessionEnv, forkGeteuid(), forkProbeShellVersion)
+	for _, w := range s.platform.Warnings {
+		s.log("Warning: %s", w)
+	}
+	if note := s.platform.LayoutNote; note != "" {
+		s.log("%s", note)
+	}
+	s.log("%s", s.platform.Summary(st.StrictPurposeFor(s.platform.Wayland)))
+}
+
 // startFork runs in Run() once the event channel exists: it starts the
-// tracker, the focus client, the user-config watcher, the status loop and the
-// IPC service. A failing IPC start is logged and the daemon continues.
+// tracker, the merged focus source, the user-config watcher, the status loop
+// and the IPC service. A failing IPC start is logged and the daemon continues.
 func (s *Switcher) startFork() {
 	parent := s.ctx
 	if parent == nil {
@@ -147,8 +171,8 @@ func (s *Switcher) startFork() {
 	if s.tracker != nil {
 		s.tracker.Start(ctx)
 	}
-	if s.focusClient != nil {
-		s.focusClient.Start(ctx)
+	if s.focusMerged != nil {
+		s.focusMerged.Start(ctx)
 	}
 	if s.userDir != "" {
 		s.forkWG.Add(1)
@@ -176,8 +200,8 @@ func (s *Switcher) stopFork() {
 		ref.svc.Close()
 	}
 	s.tracker.Stop()
-	if s.focusClient != nil {
-		s.focusClient.Close()
+	if s.focusMerged != nil {
+		s.focusMerged.Close()
 	}
 	done := make(chan struct{})
 	go func() {

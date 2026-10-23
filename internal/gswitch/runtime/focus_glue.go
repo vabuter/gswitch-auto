@@ -6,34 +6,54 @@ import (
 	"github.com/arumata/gswitch/internal/gswitch/userconfig"
 )
 
-// gswitch-auto: glue between the Switcher and the focus extension client.
-// A focus change never clears the converter buffer (C24).
+// gswitch-auto: glue between the Switcher and the focus sources (the Shell
+// extension client and, on X11, the EWMH source, merged by focus.Merged). A
+// focus change never clears the converter buffer (C24).
 
 // IPC FocusSource values.
 const (
 	forkFocusSourceActive = "active"
+	forkFocusSourceX11    = "x11"
 	forkFocusSourceAbsent = "absent"
 	forkFocusSourceOff    = "off"
 )
 
-// initFocusClient builds the focus client (started by startFork) unless
-// focus-source=off or the daemon runs as root.
-func (s *Switcher) initFocusClient(st userconfig.Settings) {
-	if st.FocusSource != userconfig.SourceAuto || forkGeteuid() == 0 {
+// initFocusClient builds the merged focus source from the platform
+// selection (SPEC-X11 §2.2): the extension client when FocusExt, the EWMH
+// source when FocusX11, both started by startFork. Without either (focus-
+// source=off, root) no focus source exists.
+func (s *Switcher) initFocusClient() {
+	sel := s.platform
+	if !sel.FocusExt && !sel.FocusX11 {
 		return
 	}
-	s.focusClient = focus.New(focus.Options{
+	m := focus.NewMerged(focus.MergedOptions{
 		OnChange: func(fs focus.State) {
 			s.enqueueControl(func() { s.onFocusState(fs) })
 			s.pushStatus()
 		},
 		Logf: s.logDebug,
 	})
+	if sel.FocusExt {
+		s.focusClient = focus.New(focus.Options{OnChange: m.ExtensionChanged, Logf: s.logDebug})
+		m.SetExtension(s.focusClient)
+	}
+	if sel.FocusX11 {
+		s.focusX11 = focus.NewX11Source(focus.X11Options{
+			Display:  x11DisplayFor(s.sessionEnv),
+			OnChange: m.X11Changed,
+			Logf:     s.logDebug,
+		})
+		m.SetX11(s.focusX11)
+	}
+	s.focusMerged = m
 }
 
 // forkFocusPolicy builds the focus policy of a loaded configuration. Excluded
 // is the (never nil) application list; ListSet is nil-receiver safe anyway.
-func forkFocusPolicy(c *userconfig.Config) *focus.Policy {
+// wayland is PlatformSelection.Wayland: RequirePurpose is the effective
+// auto-strict-purpose, c.Settings.StrictPurposeFor(wayland) (SPEC-X11 §3.3).
+func forkFocusPolicy(c *userconfig.Config, wayland bool) *focus.Policy {
 	st := c.Settings
 	return &focus.Policy{
 		Excluded:         c.Apps,
@@ -41,6 +61,7 @@ func forkFocusPolicy(c *userconfig.Config) *focus.Policy {
 		SkipTerminal:     st.SkipTerminal,
 		SkipWhenLocked:   st.SkipLocked,
 		RequireExtension: st.RequireFocus,
+		RequirePurpose:   st.StrictPurposeFor(wayland),
 	}
 }
 
@@ -66,13 +87,13 @@ func forkFocusDecision(st focus.State, p *focus.Policy) (allowed bool, reason st
 	return p.Allow(forkNormalizeFocus(st))
 }
 
-// focusState is the current focus state; the zero State (extension
-// unavailable) when there is no focus client.
+// focusState is the current merged focus state; the zero State (extension
+// unavailable, no application) when there is no focus source.
 func (s *Switcher) focusState() focus.State {
-	if s.focusClient == nil {
+	if s.focusMerged == nil {
 		return focus.State{}
 	}
-	return forkNormalizeFocus(s.focusClient.Snapshot())
+	return forkNormalizeFocus(s.focusMerged.Snapshot())
 }
 
 // autoFocusSnapshot is the engine's Focus dependency.
@@ -90,13 +111,17 @@ func (s *Switcher) onFocusState(focus.State) {
 	}
 }
 
-// focusSourceName is the IPC FocusSource value.
+// focusSourceName is the IPC FocusSource value: off (no focus source),
+// active (extension owned), x11 (application identity from the EWMH source
+// while the extension is absent), else absent.
 func (s *Switcher) focusSourceName(st focus.State) string {
 	switch {
-	case s.focusClient == nil:
+	case s.focusMerged == nil:
 		return forkFocusSourceOff
 	case st.Available:
 		return forkFocusSourceActive
+	case s.focusMerged.AppSource() == focus.AppSourceX11:
+		return forkFocusSourceX11
 	default:
 		return forkFocusSourceAbsent
 	}

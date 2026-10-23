@@ -15,7 +15,7 @@ release ([docs/FORK.md](docs/FORK.md), in Russian). Please report problems with
 the fork [here](https://github.com/vabuter/gswitch-auto/issues), not upstream.
 
 > **Status:** in development. The first release will be `v0.8.0+auto.1`;
-> until then `make rpm` builds development packages versioned
+> until then `make rpm` and `make deb` build development packages versioned
 > `0.8.0+auto.0.dev<n>.g<commit>`, which already replace upstream 0.8.0.
 
 What the fork adds on top of upstream 0.8.0:
@@ -49,9 +49,15 @@ All upstream gestures keep working unchanged: double Shift for the last word,
 the held-Shift phrase gesture, Ctrl + double Shift for the selection, case
 swap, a custom convert key, and undo by repeating the trigger.
 
-**Scope.** Automatic mode supports the `us` + `ru` layout pair on GNOME Shell
-50 under Wayland with IBus (the active layout is read from IBus); packages are
-built for Fedora 44, x86_64. On X11, KDE, other layout pairs or without IBus,
+**Scope.** Automatic mode supports the `us` + `ru` layout pair on two
+targets: GNOME Shell 50 under Wayland with IBus (Fedora 44; the active layout
+is read from the IBus engine, which follows the layout on GNOME Shell 49.3
+and later) and GNOME Shell 43 on X11 (Debian 12; the active layout is the XKB
+group of the X display, the focused window comes from `_NET_ACTIVE_WINDOW`
+and strict purpose mode is on by default, see [X11 notes](#x11-notes)).
+Packages are built for x86_64 as an RPM and a `.deb`. The daemon picks its
+sources at start from the session type and the GNOME Shell version; on
+GNOME Wayland below 49.3, on KDE, with other layout pairs or without IBus,
 automatic mode reports itself as unavailable and gswitch behaves exactly like
 upstream. The language detector is a Go port of
 [punto-rs](https://github.com/rashevskyv/punto-rs)' Bloom filter and
@@ -60,6 +66,8 @@ and no LLM.
 
 ### Install
 
+Fedora 44 (RPM):
+
 ```bash
 make rpm                                      # or download the RPM from Releases
 rpm -U --test ./dist/gswitch-auto-*.rpm       # optional dry run: changes nothing, needs no root
@@ -67,15 +75,31 @@ sudo dnf install ./dist/gswitch-auto-*.rpm    # replaces the upstream gswitch pa
 systemctl --user enable --now gswitch.service # only if it is not already running
 ```
 
-The `gswitch-auto` package provides `gswitch`, obsoletes `gswitch < 0.9` and
-keeps the binary names and file paths, so it replaces an installed upstream
-package in place. If upstream's service was enabled, the package enables it again
-after the replacement. Log out and back in once afterwards, so that GNOME Shell
-loads the bundled extension (needed for application exclusions) and the new
-tray starts. Rollback:
-`sudo dnf swap gswitch-auto ./gswitch_0.8.0_linux_amd64.rpm`, then
-`systemctl --user enable --now gswitch.service`. Build requirements and make
-targets are listed in [CONTRIBUTING.md](CONTRIBUTING.md).
+Debian 12 (`.deb`, GNOME on Xorg):
+
+```bash
+make deb                                      # builds inside a podman image (Debian 12 has no Go 1.25+)
+sudo apt install ./dist/gswitch-auto_*_amd64.deb   # replaces the upstream gswitch .deb
+systemctl --user enable --now gswitch.service # if the unit is not enabled afterwards
+```
+
+Both packages provide `gswitch`, replace the upstream package (the RPM
+obsoletes `gswitch < 0.9`, the `.deb` declares `Conflicts`/`Replaces`
+`gswitch`) and keep the binary names and file paths, so they replace an
+installed upstream package in place. If upstream's service was enabled, the
+package enables it again after the replacement (on Debian, dpkg runs
+upstream's removal script before the new package's scripts, so the user unit
+is re-enabled for every logged-in user who had upstream installed, even one
+who had deliberately disabled it; plain upgrades of `gswitch-auto` are not
+affected). Log out and back in once afterwards, so that GNOME Shell loads the
+bundled extension (needed for application exclusions; required on X11 by
+strict purpose mode) and the new tray starts; on X11, Alt+F2, `r`, Enter
+restarts the Shell in place instead. Rollback:
+`sudo dnf swap gswitch-auto ./gswitch_0.8.0_linux_amd64.rpm` or
+`sudo apt install ./gswitch_0.8.0_linux_amd64.deb` (or `sudo apt remove
+gswitch-auto`), then `systemctl --user enable --now gswitch.service`. Build
+requirements and make targets are listed in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Configuration: `~/.config/gswitch`
 
@@ -104,11 +128,12 @@ daemon only reads them and picks up changes without a restart.
 | `auto-skip-password` | `true` | Skip password and PIN fields |
 | `auto-skip-terminal` | `true` | Skip terminals |
 | `auto-skip-locked` | `true` | Skip while the screen is locked |
+| `auto-strict-purpose` | `auto` | Correct only in text fields whose type the extension reports (`auto` = on in X11 sessions and when the session type is unknown, off on Wayland; `true`/`false` force it) |
 | `hotkey-toggle-auto` | `42+54` | Toggle chord as evdev scancodes (LShift+RShift), or `none` |
 | `hotkey-convert-selection` | `42+97+100` | Selection chord (LShift+RCtrl+RAlt), or `none` |
 | `ipc-expose-words` | `true` | Include corrected and learned words in D-Bus properties and signals |
 | `focus-source` | `auto` | `auto` or `off` (restart required) |
-| `layout-source` | `auto` | `auto`, `ibus` or `none` (restart required) |
+| `layout-source` | `auto` | `auto`, `ibus`, `x11` or `none` (restart required). `auto` picks `ibus` on GNOME Wayland (Shell 49.3+) and `x11` (the XKB group of the display) on GNOME X11; `x11` also enables the X11 source on other X11 desktops, `ibus` forces the IBus engine (useless below Shell 49.3) |
 | `layout-hint-timeout-ms` | `400` | How long a physical layout-switch chord marks the layout as pending (restart required) |
 
 Invalid values fall back to the default with a warning; unknown keys are
@@ -116,14 +141,16 @@ ignored. `exceptions-words.txt` and `exceptions-apps.txt` hold one entry per
 line (`#` starts a comment). Words are matched case-insensitively against the
 word as it appeared on screen before the correction, with `ё` folded to `е`
 and edge punctuation ignored. Applications are matched by GNOME desktop id or
-WM_CLASS (`org.gnome.Ptyxis`, `kitty`; `*` and `?` wildcards work); the
-default list contains common terminals and KeePassXC.
+WM_CLASS (`org.gnome.Ptyxis`, `kitty`, `Gnome-terminal`, `XTerm`; `*` and `?`
+wildcards work); the default list contains common terminals (Wayland ids and
+X11 class names) and password managers.
 
 ### Command line additions
 
 ```text
-gswitch --auto-check <text> [--shown us|ru]  # run the detector on a word, JSON verdict
-gswitch --layout-state [--watch SECONDS]     # show the IBus layout tracker state
+gswitch --auto-check <text> [--shown us|ru]              # run the detector on a word, JSON verdict
+gswitch --layout-state [--watch SECONDS] [--source auto|ibus|x11]  # layout source and tracker state
+gswitch --focus-state [--watch SECONDS]                  # focus sources, merged state, policy decision
 ```
 
 `--auto-check ghbdtn --shown us` reports a fix to `привет`: `verdict` and
@@ -131,10 +158,19 @@ gswitch --layout-state [--watch SECONDS]     # show the IBus layout tracker stat
 (`arm`, or the reason it skips the word, such as `lexical:digit` for
 `ghb2`). Without `--shown`, the layout is inferred from the text. It uses
 the detector settings and exception words from `~/.config/gswitch`.
-`--layout-state` prints the layout pair, the IBus bus address and the active
-engine with the layout it maps to (`xkb:ru::rus` → `ru`, index 1), then
-follows changes for 10 seconds (`--watch 0` prints once). Neither needs root
-or input devices.
+`--layout-state` prints the session (`x11`/`wayland`), the GNOME Shell
+version, the sources the daemon would use (`layout sources: ibus …` on the
+Fedora host, `layout sources: x11 …` on Debian) and the state of the layout
+source: for IBus the bus address and the active engine with the layout it
+maps to (`xkb:ru::rus` → `ru`, index 1), for X11 the XKB extension,
+`_XKB_RULES_NAMES`, the group table and the current group (`xkb:ru::` →
+`ru`, index 1); it then follows changes for 10 seconds (`--watch 0` prints
+once). `--source ibus|x11` forces one source (with a note when the daemon
+would not use it). `--focus-state` prints the extension view, the X11 active
+window (`WM_CLASS`, `_GTK_APPLICATION_ID`), the merged state and whether the
+focus policy of `~/.config/gswitch` would allow a correction, then follows
+focus changes. None of them needs root or input devices, and all are
+read-only.
 
 ### D-Bus interface
 
@@ -145,7 +181,8 @@ instance (for example `gswitch --debug` next to the service) runs without IPC.
 
 - Properties: `AutoEnabled` (read-write), `AutoEnabledUnsaved`,
   `PendingLearnedWords`, `AutoAvailable`, `AutoUnavailableReason`,
-  `ActiveLayout`, `LayoutKnown`, `LayoutSource`, `FocusSource`, `FocusedApp`,
+  `ActiveLayout`, `LayoutKnown`, `LayoutSource` (`ibus`, `x11`, `gsettings`),
+  `FocusSource` (`active`, `x11`, `absent`, `off`), `FocusedApp`,
   `FocusedWmClass`, `InputPurpose`, `FocusSuppressed`,
   `FocusSuppressedReason`, `LastCorrection`, `CorrectionCount`, `Stats`,
   `ToggleChord`, `SelectionChord`, `HotkeysSuspended`, `ConfigDir`,
@@ -170,18 +207,69 @@ package installs a small extension, `gswitch-focus@vabuter.github.io`, into
 desktop id, its WM_CLASS and the purpose of the focused text field (normal,
 password, terminal, …) as `org.gnome.Shell.Extensions.GswitchFocus` on the
 session bus. It exposes no window titles, no text and no process ids, and it
-is disabled by GNOME Shell on the lock screen.
+is disabled by GNOME Shell on the lock screen. The extension exists in two
+trees with the same UUID and interface: the ES-module one for GNOME Shell 50
+(shipped by the RPM) and a legacy one for GNOME Shell 43/44 (shipped by the
+`.deb`; `scripts/install-extension.sh --legacy` installs it by hand), see
+[shell-extension/README.md](shell-extension/README.md).
 
 GNOME Shell loads new or updated extensions only at login: log out and back in
-after installing or upgrading, then enable it in the tray settings (Auto
-correction tab, Excluded applications, **Enable**) or with
+after installing or upgrading (on X11, Alt+F2, `r`, Enter restarts the Shell
+in place), then enable it in the tray settings (Auto correction tab, Excluded
+applications, **Enable**) or with
 `gnome-extensions enable gswitch-focus@vabuter.github.io`; no second login is
 needed. Before that login, `gnome-extensions enable` fails because the running
 Shell has not seen the extension; the tray's **Enable at next login** button
 adds it to `org.gnome.shell enabled-extensions` instead. Without the
 extension, application exclusions and password/terminal detection are
-inactive and automatic mode keeps working elsewhere; set
-`auto-require-focus=true` to turn automatic mode off instead.
+inactive and automatic mode keeps working elsewhere (on Wayland; on X11 the
+exclusions still work from `WM_CLASS`, and strict purpose mode makes
+automatic mode unavailable instead); set `auto-require-focus=true` to turn
+automatic mode off instead.
+
+### X11 notes
+
+Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
+`GTK_IM_MODULE=ibus`. What differs from the Wayland target:
+
+- **Layout.** GNOME Shell below 49.3 sets the IBus engine to `xkb:us::eng`
+  for every XKB layout (`ibus engine` prints it in both layouts), so the IBus
+  engine is useless there. The daemon reads the XKB group of the X display
+  instead, polling it every 50 ms; the group order is the order of
+  `org.gnome.desktop.input-sources sources`, mapped by layout name. The
+  daemon logs `layout sources: x11 …` at start; `gswitch --layout-state`
+  shows the table and the current group. Manual conversions use upstream's
+  X11 path unchanged (`XF86Launch7` is added to the Shell's
+  `switch-input-source` binding, as upstream does).
+- **Focus.** The focused application comes from the Shell extension when it
+  is enabled and from `_NET_ACTIVE_WINDOW` (`WM_CLASS`, `_GTK_APPLICATION_ID`)
+  otherwise, so the exclusion list works without the extension. The purpose of
+  the focused field is only known through the extension.
+- **Strict purpose mode** (`auto-strict-purpose`, on by default on X11 and
+  when the session type is unknown, off on Wayland) corrects only in a text
+  field whose type the extension reports. The reason: GTK's IBus module never
+  focuses an input context for a password entry, so on X11 a GTK 3 password
+  field looks like "no text field" (`none`); strict mode denies it as
+  `purpose-unknown`. The price: applications without an IBus input context
+  (xterm, Java/SWT, Wine, some Electron builds) are never corrected, and while
+  the extension is missing automatic mode reports `focus-extension-required`.
+  Turning strict mode off (tray checkbox "Correct only in fields that report
+  their type", or `auto-strict-purpose=false`) restores fail-open behaviour:
+  everything not in the exclusion list is corrected, including GTK 3 password
+  entries; the default list therefore contains password managers.
+- **Diagnostics.** `gswitch --layout-state` and `gswitch --focus-state` show
+  what the daemon selected; `busctl --user get-property
+  io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto
+  io.github.vabuter.GswitchAuto AutoUnavailableReason` explains an
+  unavailable automatic mode (`layout-source-unsupported`,
+  `focus-extension-required`, `focus-source-off`, …). If the user unit lacks
+  `XDG_SESSION_TYPE` (custom `.xsession`), run `systemctl --user
+  import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE`; without it the
+  daemon selects no X11 source and automatic mode stays unavailable.
+- **Other X11 desktops** (KDE, awesome, …) get no layout source with
+  `layout-source=auto`; `layout-source=x11` enables the XKB source there
+  (best effort, no purpose information, so `auto-strict-purpose=false` is
+  needed as well).
 
 ### Privacy and persistence
 
@@ -225,7 +313,8 @@ that gswitch does not guess your language or changes text only when you press
 a trigger, it describes the manual mode; automatic mode is opt-in. Fork
 packages are named `gswitch-auto`, come from
 [this fork's releases](https://github.com/vabuter/gswitch-auto/releases), and
-are built with nfpm (`scripts/build-rpm.sh`) rather than GoReleaser.*
+are built with nfpm (`scripts/build-rpm.sh`, `scripts/build-deb.sh`) rather
+than GoReleaser.*
 
 # gswitch
 

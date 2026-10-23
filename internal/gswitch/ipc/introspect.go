@@ -5,7 +5,23 @@ import (
 	"github.com/godbus/dbus/v5/prop"
 )
 
-// Property names of the daemon interface.
+// Property names of the daemon interface. Value vocabularies of the string
+// properties (SPEC §3.9.1, SPEC-X11 §2.4; the XML below is unchanged by the
+// X11 addendum):
+//   - LayoutSource: "ibus" | "x11" (XKB group of the X display) | "gsettings"
+//     (resync fallback) | "" (unknown).
+//   - FocusSource: "active" (extension owned) | "x11" (application identity
+//     from the EWMH active window while the extension is absent) | "absent" |
+//     "off".
+//   - AutoUnavailableReason: "" | "degraded" | "no-layout-converter" |
+//     "unsupported-layouts" | "layout-source-off" | "layout-source-unsupported"
+//     | "layout-unknown" | "root-mode" | "detector-error" | "focus-source-off"
+//     | "focus-extension-required".
+//   - FocusSuppressedReason: "" | "locked" | "focus-unavailable" |
+//     "focus-unknown" | "password-field" | "terminal" | "purpose-unknown" |
+//     "excluded-app".
+//   - ConfigWarnings also carries the platform selection warnings
+//     (layout-source=x11 on Wayland, layout-source=ibus below GNOME Shell 49.3).
 const (
 	propAutoEnabled           = "AutoEnabled"
 	propAutoEnabledUnsaved    = "AutoEnabledUnsaved"

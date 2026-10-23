@@ -569,6 +569,15 @@ func TestManualConversionWithoutTracker(t *testing.T) {
 			XDGCurrentDesktop: "KDE", XDGSessionDesktop: "plasma",
 		}
 	}
+	// X11 without GNOME (SPEC-X11 §2.1): no source with layout-source=auto;
+	// the display is one no server listens on, nothing is started anyway.
+	x11kde := func(home string) *SessionEnv {
+		return &SessionEnv{
+			User: "u", Home: home, XDGConfigHome: home,
+			SessionType: "x11", Display: ":4242",
+			XDGCurrentDesktop: "KDE", XDGSessionDesktop: "plasma",
+		}
+	}
 	tests := []struct {
 		name         string
 		env          func(home string) *SessionEnv
@@ -581,6 +590,8 @@ func TestManualConversionWithoutTracker(t *testing.T) {
 		{name: "root mode", env: gnome, layoutSource: "auto", root: true},
 		{name: "gnome wayland verify, layout-source=none", env: gnome, layoutSource: "none", verify: true},
 		{name: "gnome wayland verify, root mode", env: gnome, layoutSource: "auto", root: true, verify: true},
+		{name: "x11 kde session", env: x11kde, layoutSource: "auto"},
+		{name: "x11 kde session, layout-source=none", env: x11kde, layoutSource: "none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

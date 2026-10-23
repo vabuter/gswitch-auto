@@ -828,25 +828,25 @@ func TestExcludedAppMatchesRawExtensionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, reason := forkFocusDecision(raw, forkFocusPolicy(c)); ok || reason != focus.ReasonExcludedApp {
+	if ok, reason := forkFocusDecision(raw, forkFocusPolicy(c, true)); ok || reason != focus.ReasonExcludedApp {
 		t.Fatalf("hand-entered raw id: Allow = %v, %q; want denied excluded-app", ok, reason)
 	}
 	other := raw
 	other.AppID, other.WmClass = "org.gnome.TextEditor.desktop", "gnome-text-editor"
-	if ok, _ := forkFocusDecision(other, forkFocusPolicy(c)); !ok {
+	if ok, _ := forkFocusDecision(other, forkFocusPolicy(c, true)); !ok {
 		t.Fatal("an application not in the list was denied")
 	}
 
 	// The engine's view through the switcher: no focus client means the
 	// extension is unavailable, which is allowed unless auto-require-focus.
 	s, _ := forkTestSwitcher(t, &Config{})
-	s.focusPolicy.Store(forkFocusPolicy(c))
+	s.focusPolicy.Store(forkFocusPolicy(c, true))
 	if snap := s.autoFocusSnapshot(); !snap.Allowed {
 		t.Fatalf("no focus client: snapshot %+v, want allowed (fail-open)", snap)
 	}
 	st := userconfig.DefaultSettings()
 	st.RequireFocus = true
-	s.focusPolicy.Store(forkFocusPolicy(forkTestConfig(st, nil, nil)))
+	s.focusPolicy.Store(forkFocusPolicy(forkTestConfig(st, nil, nil), true))
 	if snap := s.autoFocusSnapshot(); snap.Allowed || snap.Reason != focus.ReasonFocusUnavailable {
 		t.Fatalf("auto-require-focus without focus: snapshot %+v, want focus-unavailable", snap)
 	}

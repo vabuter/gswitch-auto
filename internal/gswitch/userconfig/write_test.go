@@ -471,13 +471,15 @@ func TestEnsureFiles(t *testing.T) {
 	for _, app := range []string{
 		"org.gnome.terminal", "org.gnome.console", "org.gnome.ptyxis", "com.mitchellh.ghostty",
 		"kitty", "alacritty", "org.wezfurlong.wezterm", "org.keepassxc.keepassxc",
+		// X11 / Debian WM_CLASS variants (SPEC-X11 §3.9)
+		"gnome-terminal", "kgx", "xterm", "keepassxc",
 	} {
 		if !c.Apps.MatchApp(app, "") {
 			t.Errorf("seed %s missing", app)
 		}
 	}
-	if c.Apps.Len() != 8 {
-		t.Errorf("seeded %d apps, want 8", c.Apps.Len())
+	if c.Apps.Len() != 24 {
+		t.Errorf("seeded %d apps, want 24", c.Apps.Len())
 	}
 	if err := EnsureFiles(dir); err != nil {
 		t.Fatal(err)

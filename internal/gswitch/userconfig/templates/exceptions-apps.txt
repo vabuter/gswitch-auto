@@ -1,11 +1,12 @@
 # gswitch-auto excluded applications: no automatic correction in these apps.
 #
-# Exclusions need the gswitch-focus GNOME Shell extension; without it this
-# list has no effect. One entry per line: a desktop application id (the
-# ".desktop" suffix is optional) or a WM_CLASS; matching ignores case.
-# Entries containing '*' or '?' are glob patterns. '#' starts a comment.
+# On Wayland, exclusions need the gswitch-focus GNOME Shell extension; on X11
+# they also work from the focused window's WM_CLASS without it. One entry per
+# line: a desktop application id (the ".desktop" suffix is optional) or a
+# WM_CLASS class name; matching ignores case. Entries containing '*' or '?'
+# are glob patterns. '#' starts a comment.
 
-# Terminals
+# Terminals (Wayland application ids)
 org.gnome.terminal
 org.gnome.console
 org.gnome.ptyxis
@@ -14,5 +15,24 @@ kitty
 alacritty
 org.wezfurlong.wezterm
 
+# Terminals: X11 / Debian WM_CLASS variants and legacy ids; the Wayland ids
+# above still apply
+gnome-terminal            # WM_CLASS class "Gnome-terminal" (gnome-terminal-server on X11)
+gnome-terminal-server     # Wayland app id of the same program
+kgx                       # GNOME Console binary / X11 class
+xterm                     # "XTerm"
+uxterm
+konsole
+terminator
+tilix
+xfce4-terminal
+mate-terminal
+lxterminal
+urxvt
+st-256color
+
 # Password managers
 org.keepassxc.keepassxc
+keepassxc                 # WM_CLASS "keepassxc"/"KeePassXC"
+bitwarden
+1password

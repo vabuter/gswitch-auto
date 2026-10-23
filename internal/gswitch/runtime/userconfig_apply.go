@@ -158,7 +158,8 @@ func (s *Switcher) applyChords(prev *userconfig.Config, st userconfig.Settings) 
 
 // applyUserConfig swaps in a newly loaded configuration (watcher goroutine or
 // D-Bus Reload): detector options and exceptions (file words plus words
-// learned but not yet persisted), chords, focus policy, pending learned words,
+// learned but not yet persisted), chords, focus policy (auto-strict-purpose
+// is re-resolved against the session, SPEC-X11 §3.3), pending learned words,
 // and the auto-enabled rule of §3.10.5. Notifications are sent after autoMu is
 // released.
 func (s *Switcher) applyUserConfig(c *userconfig.Config) {
@@ -174,7 +175,7 @@ func (s *Switcher) applyUserConfig(c *userconfig.Config) {
 	}
 	s.syncLearnedExceptions(c)
 	s.applyChords(prev, c.Settings)
-	s.focusPolicy.Store(forkFocusPolicy(c))
+	s.focusPolicy.Store(forkFocusPolicy(c, s.platform.Wayland))
 	changed, enabled := s.applyAutoEnabledRuleLocked(c.Settings.AutoEnabled)
 	s.autoMu.Unlock()
 

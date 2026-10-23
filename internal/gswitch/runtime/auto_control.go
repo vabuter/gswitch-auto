@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/arumata/gswitch/internal/gswitch/focus"
 	"github.com/arumata/gswitch/internal/gswitch/ipc"
 	"github.com/arumata/gswitch/internal/gswitch/lang"
 	"github.com/arumata/gswitch/internal/gswitch/layoutstate"
@@ -22,7 +23,7 @@ import (
 // daemon never writes a file: runtime changes are persisted by the tray on
 // its behalf (AutoEnabledUnsaved, PendingLearnedWords; D2, C6).
 
-// AutoUnavailableReason codes (§3.9.1).
+// AutoUnavailableReason codes (§3.9.1; SPEC-X11 §2.3 adds the last three).
 const (
 	autoUnavailableDegraded       = "degraded"
 	autoUnavailableNoConverter    = "no-layout-converter"
@@ -31,6 +32,15 @@ const (
 	autoUnavailableLayoutUnknown  = "layout-unknown"
 	autoUnavailableRootMode       = "root-mode"
 	autoUnavailableDetectorError  = "detector-error"
+	// autoUnavailableLayoutSourceUnsupported: no layout source exists for
+	// this session (GNOME Shell below 49.3 on Wayland, a non-GNOME session
+	// with layout-source=auto, layout-source=x11 on Wayland).
+	autoUnavailableLayoutSourceUnsupported = "layout-source-unsupported"
+	// autoUnavailableFocusSourceOff: strict purpose mode with focus-source=off.
+	autoUnavailableFocusSourceOff = "focus-source-off"
+	// autoUnavailableFocusExtRequired: strict purpose mode while the Shell
+	// extension is not owned (and the screen is not locked).
+	autoUnavailableFocusExtRequired = "focus-extension-required"
 )
 
 // forkIPCService is the part of *ipc.Service the switcher uses. Every method
@@ -81,6 +91,9 @@ func (s *Switcher) buildAutoEngine() (*AutoEngine, string, error) {
 		return nil, autoUnavailableUnsupported, nil
 	}
 	if s.tracker == nil {
+		if reason := s.platform.LayoutReason; reason != "" {
+			return nil, reason, nil
+		}
 		if forkGeteuid() == 0 {
 			return nil, autoUnavailableRootMode, nil
 		}
@@ -411,19 +424,32 @@ func (s *Switcher) statusLoop(ctx context.Context) {
 	}
 }
 
-// autoAvailability maps the engine and tracker state to AutoAvailable and
-// AutoUnavailableReason. Pending counts as available: it lasts at most
-// layout-hint-timeout-ms and must not make the tray flicker.
-func (s *Switcher) autoAvailability(ls layoutstate.State) (bool, string) {
+// autoAvailability maps the engine, tracker and focus state to AutoAvailable
+// and AutoUnavailableReason (SPEC-X11 §2.3 precedence). Pending counts as
+// available: it lasts at most layout-hint-timeout-ms and must not make the
+// tray flicker. Strict purpose mode is read from the live policy
+// (auto-strict-purpose is hot-reloadable), never from a start value: without
+// any focus source it is focus-source-off, while the extension is not owned
+// (and nothing is locked) it is focus-extension-required; a lock counts as
+// available and shows up as FocusSuppressedReason=locked.
+func (s *Switcher) autoAvailability(ls layoutstate.State, fs focus.State) (bool, string) {
 	if s.auto == nil {
 		return false, s.autoReason
 	}
 	switch ls.Confidence {
 	case layoutstate.Confirmed, layoutstate.Pending:
-		return true, ""
 	default:
 		return false, autoUnavailableLayoutUnknown
 	}
+	if p := s.focusPolicy.Load(); p != nil && p.RequirePurpose {
+		switch {
+		case s.focusMerged == nil:
+			return false, autoUnavailableFocusSourceOff
+		case !fs.Available && !fs.Locked:
+			return false, autoUnavailableFocusExtRequired
+		}
+	}
+	return true, ""
 }
 
 // statusSnapshot builds the IPC status. It runs on any goroutine and only
@@ -441,16 +467,16 @@ func (s *Switcher) statusSnapshot() ipc.Status {
 	}
 
 	ls := s.tracker.State()
-	st.AutoAvailable, st.UnavailableReason = s.autoAvailability(ls)
+	fs := s.focusState()
+	st.AutoAvailable, st.UnavailableReason = s.autoAvailability(ls, fs)
 	if ls.Index >= 0 {
 		st.ActiveLayout = s.layoutName(ls.Index)
 	}
 	st.LayoutKnown = ls.Confidence == layoutstate.Confirmed && ls.Index >= 0
 	st.LayoutSource = ls.Source
 
-	fs := s.focusState()
 	st.FocusSource = s.focusSourceName(fs)
-	if s.focusClient != nil {
+	if s.focusMerged != nil {
 		st.FocusedApp, st.FocusedWmClass, st.InputPurpose = fs.AppID, fs.WmClass, string(fs.Purpose)
 	}
 	allowed, reason := forkFocusDecision(fs, s.focusPolicy.Load())
@@ -486,13 +512,14 @@ func (s *Switcher) statusSnapshot() ipc.Status {
 	return st
 }
 
-// configWarnings lists the loader warnings, the runtime chord warnings and
-// the keys that only apply after a restart.
+// configWarnings lists the loader warnings, the platform selection warnings,
+// the runtime chord warnings and the keys that only apply after a restart.
 func (s *Switcher) configWarnings(cfg *userconfig.Config, chordWarnings []string) []string {
 	warnings := []string{}
 	if cfg != nil {
 		warnings = append(warnings, cfg.Warnings...)
 	}
+	warnings = append(warnings, s.platform.Warnings...)
 	warnings = append(warnings, chordWarnings...)
 	if cfg != nil {
 		warnings = append(warnings, s.restartWarnings(cfg.Settings)...)

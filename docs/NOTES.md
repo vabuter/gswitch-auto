@@ -1,8 +1,9 @@
 # gswitch-auto: заметки проекта
 
-Цель: аналог Punto Switcher для Fedora 44 / GNOME 50 / Wayland. Сейчас стоит
-gswitch 0.8.0 (ручное исправление по двойному Shift). Возможное продолжение:
-форк gswitch с автоматическим режимом (см. gswitch-auto-mode-assessment.md).
+Цель: аналог Punto Switcher для Fedora 44 / GNOME 50 / Wayland и для второй машины
+Debian 12 / GNOME 43 / X11. На хосте стоит gswitch 0.8.0 (ручное исправление по двойному
+Shift); форк gswitch-auto с автоматическим режимом — в этом репозитории
+(см. gswitch-auto-mode-assessment.md, SPEC.md, SPEC-X11.md).
 
 ## Окружение (на 2026-10-09)
 
@@ -10,6 +11,23 @@ gswitch 0.8.0 (ручное исправление по двойному Shift).
 - Раскладки GNOME: us, ru; per-window = false; переключение `<Alt>Shift_L`
   (keybinding gnome-shell, не XKB-опция).
 - Пользователь vab состоит в группах wheel, input.
+
+## Вторая машина: Debian 12 (проверено пользователем 2026-10-22)
+
+- Debian 12 (bookworm), GNOME Shell 43.9, сессия **X11** (`echo $XDG_SESSION_TYPE` → `x11`),
+  IBus 1.5.27, `GTK_IM_MODULE=ibus`, `im-config -m` → `ibus`.
+- `gsettings get org.gnome.desktop.input-sources sources` → `[('xkb', 'us'), ('xkb', 'ru')]`;
+  `switch-input-source` → `['<Super>space', 'XF86Keyboard']`.
+- `ibus engine` печатает `xkb:us::eng` в **обеих** раскладках: GNOME Shell ≤ 49.2 ставит
+  фиксированный engine для всех XKB-источников (`js/ui/status/keyboard.js`), поэтому
+  IBus-трекер там бесполезен. Раскладка читается из XKB-группы X-дисплея (опрос
+  `XkbGetState`, порядок групп = порядок `sources`), фокус — из `_NET_ACTIVE_WINDOW` и
+  расширения (legacy-дерево для GNOME 43), строгий режим по умолчанию включён
+  (`docs/SPEC-X11.md`). Пакет: `.deb`, сборка `make deb` в podman-образе
+  `golang:1.26-bookworm` (в Debian 12 Go 1.19).
+- GTK-модуль IBus не делает focus-in для поля пароля (`visibility=FALSE`), поэтому на X11
+  GTK3-пароль виден как «нет поля» (`none`) — строгий режим отклоняет его как
+  `purpose-unknown`.
 
 ## Что установлено и как
 
