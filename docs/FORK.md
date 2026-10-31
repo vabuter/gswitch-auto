@@ -70,14 +70,16 @@ Debian 12 userland + Go 1.26 + nfpm + lintian + Xvfb), потому что в De
 (backports 1.23), а `go.mod` требует 1.25.5. `scripts/build-deb.sh [--version V]
 [--revision R] [--out DIR] [--skip-tests] [--no-container] [--image IMG]` собирает образ и
 перезапускает себя в нём: `--userns=keep-id`, `--security-opt label=disable` (не `:Z`, чтобы не
-перемаркировать checkout на SELinux-хосте), `HOME=/tmp`, кэши модулей и сборки на именованных
+перемаркировать checkout на SELinux-хосте), checkout смонтирован только для чтения (`/src:ro`),
+записываемы лишь `builds/deb` (bind-mount поверх `/src/builds/deb`) и каталог `--out`
+(в контейнере `/out`), `HOME=/tmp`, кэши модулей и сборки на именованных
 томах `gswitch-auto-gomod`/`gswitch-auto-gocache`; нужна сеть для загрузки модулей. Внутри:
 preflight → `version.sh --verify-deb` → `check-extension.sh` → проверка маркеров скриптлетов
 → `go test ./...` → CGO-сборка в `builds/deb/` (никогда поверх `builds/` хоста) → nfpm →
 `checksums-deb.txt` → проверки `dpkg-deb` (Depends/Recommends/Provides/Replaces/Conflicts,
-права, user unit побайтно = `configs/gswitch.service`, legacy-расширение с `function init(`,
-`copyright`, лицензии, нет `/usr/lib/systemd/system/gswitch.service`) → `lintian --fail-on
-error --suppress-tags debian-changelog-file-missing`. Версия deb `<V>-<R>` (`0.8.0+auto.1-1`),
+права, user unit побайтно = `configs/gswitch.service`, legacy-расширение с `function init(` и
+`shell-version` с `43`, `copyright`, лицензии, нет `/usr/lib/systemd/system/gswitch.service`) →
+`lintian --fail-on error --suppress-tags debian-changelog-file-missing`. Версия deb `<V>-<R>` (`0.8.0+auto.1-1`),
 порядок проверяет `scripts/version.sh --verify-deb` / `--debcmp A B` (dpkg в контейнере,
 python-порт `verrevcmp` на хосте). Никогда не запускать podman-сборку с `builds/` хоста в
 качестве цели.
@@ -92,7 +94,8 @@ polkit, desktop-файлы, все иконки, `metadata.json` и `extension.j
 (каталог 0755, файлы 0644), лицензии, `hunspell-ru-LICENSE` (%license), README (%doc),
 `default.conf` (%config(noreplace)), скриптлеты pretrans/posttrans, нет
 `/usr/lib/systemd/system/gswitch.service`, упакованный user unit побайтно совпадает с
-`configs/gswitch.service` из тега upstream `v<base>` → проверка пути обновления: если на
+`configs/gswitch.service` из тега upstream `v<base>`, упакованное расширение — ESM-вариант
+(`export default class`), побайтно равный `shell-extension/<uuid>/` → проверка пути обновления: если на
 хосте стоит upstream `gswitch` (или более старый `gswitch-auto`), новая версия должна
 быть выше установленной, граница Obsoletes — покрывать установленный `gswitch`, а
 `rpm -U --test` — принять обновление (только читает rpmdb, ничего не ставит, root не

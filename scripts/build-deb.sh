@@ -32,7 +32,9 @@
 # Without --no-container the script builds IMG from
 # packaging/debian12.Containerfile (Debian 12 userland, Go 1.26, nfpm,
 # lintian) and re-runs itself inside it with --no-container. The checkout is
-# mounted at /src, the container runs as the invoking user
+# mounted read-only at /src, with builds/deb (the binaries) and the output
+# directory (at /out) as the only writable mounts; the container runs as
+# the invoking user
 # (--userns=keep-id; label=disable instead of :Z so the checkout is never
 # relabelled on SELinux hosts), and the Go module and build caches live on
 # the named volumes gswitch-auto-gomod and gswitch-auto-gocache. The module
@@ -253,18 +255,13 @@ if [[ $in_container == true ]]; then
     step "Container image $image"
     "$podman" build -t "$image" -f "$containerfile" packaging/
 
-    mkdir -p "$out"
+    # The checkout is mounted read-only: the container writes only the
+    # binaries (builds/deb, bind-mounted over the read-only tree; the mount
+    # point must exist on the host) and the output directory (always /out).
+    mkdir -p "$out" builds/deb
     out_abs=$(cd "$out" && pwd)
-    mount_args=()
-    case $out_abs in
-        "$repo_root") inner_out=. ;;
-        "$repo_root"/*) inner_out=${out_abs#"$repo_root"/} ;;
-        *)
-            inner_out=/out
-            mount_args=(-v "$out_abs:/out")
-            ;;
-    esac
-    inner_args=(--no-container --version "$version" --revision "$revision" --out "$inner_out" --image "$image")
+    mount_args=(-v "$repo_root/builds/deb:/src/builds/deb" -v "$out_abs:/out")
+    inner_args=(--no-container --version "$version" --revision "$revision" --out /out --image "$image")
     if [[ $skip_tests == true ]]; then
         inner_args+=(--skip-tests)
     fi
@@ -290,12 +287,14 @@ if [[ $in_container == true ]]; then
 
     step "Build inside $image"
     "$podman" run --rm --userns=keep-id --security-opt label=disable \
-        -v "$repo_root:/src" -w /src "${mount_args[@]}" \
+        -v "$repo_root:/src:ro" -w /src "${mount_args[@]}" \
         -v gswitch-auto-gomod:/tmp/gomod -v gswitch-auto-gocache:/tmp/go-build \
         -e HOME=/tmp -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/go-build \
         -e GOFLAGS=-buildvcs=false \
         -e "GSWITCH_VERSION=$version" -e "GSWITCH_RELEASE=$revision" \
         "$image" scripts/build-deb.sh "${inner_args[@]}"
+    printf 'host paths: %s/gswitch-auto_%s-%s_amd64.deb, %s/checksums-deb.txt\n' \
+        "$out_abs" "$version" "$revision" "$out_abs"
     exit 0
 fi
 
@@ -601,6 +600,11 @@ else
 fi
 expect "packaged metadata.json uuid is $extension_uuid" \
     test "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("uuid", ""))' "$ext_dir/metadata.json")" = "$extension_uuid"
+# GNOME Shell 43.9 (Debian 12) loads an extension only when its metadata
+# lists the running major version.
+expect "packaged metadata.json shell-version lists 43 (Debian 12)" \
+    python3 -c 'import json, sys; sys.exit("43" not in json.load(open(sys.argv[1], encoding="utf-8")).get("shell-version", []))' \
+    "$ext_dir/metadata.json"
 
 expect "copyright file is DEP-5" \
     grep -q '^Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/$' \
@@ -611,7 +615,7 @@ step "lintian"
 # Errors fail the build. debian-changelog-file-missing is suppressed (SPEC-X11
 # §3.8.1, Q-X6); warnings and info tags are advisory and listed here.
 lintian_rc=0
-lintian --allow-root --no-tag-display-limit --fail-on error \
+lintian --allow-root --tag-display-limit 0 --fail-on error \
     --suppress-tags debian-changelog-file-missing "$deb_file" || lintian_rc=$?
 if ((lintian_rc == 0)); then
     printf 'ok    lintian reports no errors (warnings and info tags above are advisory)\n'

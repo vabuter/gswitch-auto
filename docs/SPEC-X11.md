@@ -39,6 +39,12 @@ sources are bounded and leave nothing behind, a nonexistent screen number is an 
 .deb leaves the build only after its checks, the release is published only with both packages
 (§3.8.5); CI runs the gated X11 tests under Xvfb (§6.2).
 
+Revision 5 (2026-10-31, packaging verification on a real `make deb` and a clean `debian:12`
+install): the container build mounts the checkout read-only and writes only `builds/deb` and
+the output directory (§3.8.3); the deb assertions also require `"43"` in the packaged
+`metadata.json` `shell-version`, and `build-rpm.sh` asserts that the RPM ships the ESM tree
+byte for byte (§3.8.3).
+
 This addendum makes the same program (same repository, same Go module, same binaries) work on
 the user's second machine. It changes nothing in SPEC.md's fixed decisions D1–D8 and corrections
 C1–C29; where this document and SPEC.md differ for the **X11 target**, this document wins; for
@@ -1023,13 +1029,18 @@ and re-executes itself inside:
 
 ```
 podman run --rm --userns=keep-id --security-opt label=disable \
-  -v "$repo:/src" -w /src \
+  -v "$repo:/src:ro" -w /src -v "$repo/builds/deb:/src/builds/deb" -v "$out:/out" \
+  -v "$upstream_ref:/upstream-ref:ro" \
   -v gswitch-auto-gomod:/tmp/gomod -v gswitch-auto-gocache:/tmp/go-build \
   -e HOME=/tmp -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/go-build -e GOFLAGS=-buildvcs=false \
-  -e GSWITCH_VERSION -e GSWITCH_RELEASE … $DEB_IMAGE scripts/build-deb.sh --no-container …
+  -e GSWITCH_VERSION -e GSWITCH_RELEASE … $DEB_IMAGE scripts/build-deb.sh --no-container \
+  --out /out --upstream-unit /upstream-ref/gswitch.service …
 ```
 
-Why these flags: `--security-opt label=disable` instead of `:Z` — a `:Z` mount relabels every
+Why these flags: the checkout is mounted read-only, so the container build cannot modify the
+host tree; its only writable mounts are `builds/deb` (created on the host first, bind-mounted
+over the read-only tree) and the output directory at `/out` (rev. 5).
+`--security-opt label=disable` instead of `:Z` — a `:Z` mount relabels every
 file of the checkout to `container_file_t` on the SELinux host, a persistent side effect on the
 user's tree; with `--userns=keep-id` the uid-1000 process has no writable `$HOME` inside
 `golang:1.26-bookworm` and `/go` (GOPATH/GOMODCACHE) is root-owned, so `go build`/`go test` and
@@ -1046,7 +1057,7 @@ binaries in `builds/`), `nfpm package --packager deb --target dist/gswitch-auto_
 Package/Version/Architecture, Depends/Recommends/Provides/Replaces/Conflicts lines, files
 (binaries 0755, user unit, udev rule, `default.conf` listed in `conffiles`, legacy
 `metadata.json`/`extension.js`, **no** ESM-only marker — the packaged `extension.js` contains
-`function init(`), `/usr/share/doc/gswitch-auto/copyright`, licences, no
+`function init(` and the packaged `metadata.json` lists `"43"` in `shell-version`), `/usr/share/doc/gswitch-auto/copyright`, licences, no
 `/usr/share/licenses`, no `/usr/lib/systemd/system/gswitch.service`; packaged user unit
 byte-identical to `configs/gswitch.service`; `lintian --fail-on error --suppress-tags
 debian-changelog-file-missing` (§3.8.1; warnings and the remaining info tags are advisory and
@@ -1470,7 +1481,7 @@ must pass (the merged focus source and the polling source are the new concurrenc
 Container recipe (documented in `docs/FORK.md` and `CLAUDE.md`), run from the repo root:
 
 ```
-podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/src" -w /src \
+podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/src:ro" -w /src \
   -v gswitch-auto-gomod:/tmp/gomod -v gswitch-auto-gocache:/tmp/go-build \
   -e HOME=/tmp -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/go-build -e GOFLAGS=-buildvcs=false \
   localhost/gswitch-auto-deb:bookworm \

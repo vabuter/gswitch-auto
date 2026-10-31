@@ -382,6 +382,17 @@ fi
 expect "packaged user unit is byte-identical to $reference" \
     cmp -s "$tmp/usr/lib/systemd/user/gswitch.service" "$tmp/upstream.service"
 
+# The RPM ships the ESM extension tree (GNOME Shell 50, Fedora); the legacy
+# tree under shell-extension/legacy/ belongs to the deb (SPEC-X11 §3.6).
+ext_rel=usr/share/gnome-shell/extensions/$extension_uuid
+(cd "$tmp" && rpm2cpio "$rpm_file" | cpio -idmu --quiet "./$ext_rel/extension.js" "./$ext_rel/metadata.json")
+expect "packaged extension.js is the ESM variant (export default class)" \
+    grep -q '^export default class ' "$tmp/$ext_rel/extension.js"
+for f in metadata.json extension.js; do
+    expect "packaged extension $f is shell-extension/$extension_uuid/$f" \
+        cmp -s "$tmp/$ext_rel/$f" "shell-extension/$extension_uuid/$f"
+done
+
 # Upgrade path on this host (Fedora): when upstream gswitch or an older
 # gswitch-auto is installed, the new package must sort above it, the
 # Obsoletes bound must cover an installed upstream package, and an rpm
