@@ -80,5 +80,6 @@ ext-check:
 version:
 	@scripts/version.sh
 
+# scripts/build-deb.sh always builds into builds/deb, whatever BUILDDIR is.
 clean:
-	rm -rf $(BUILDDIR)/deb $(BUILDDIR) $(DISTDIR)
+	rm -rf builds/deb $(BUILDDIR) $(DISTDIR)

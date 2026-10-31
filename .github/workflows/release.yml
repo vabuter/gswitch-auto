@@ -111,8 +111,12 @@ jobs:
     if: contains(github.ref_name, '+auto.')
     runs-on: ubuntu-24.04
     container: docker.io/library/golang:1.26-bookworm
+    env:
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
+      # Same package list as packaging/debian12.Containerfile; git before the
+      # checkout, which otherwise downloads a tarball without tags.
       - name: Install build dependencies
         run: |
           apt-get update
@@ -124,6 +128,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # Root in the container, workspace owned by the runner user: mark it
+      # safe, or git (and scripts/version.sh) refuses the repository.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
@@ -146,10 +155,14 @@ jobs:
           fi
           echo "version=$version" >>"$GITHUB_OUTPUT"
 
+      # The tests ran in the release job (scripts/build-rpm.sh) for this
+      # commit; this job runs as root, where the tests that expect permission
+      # errors do not hold. It checks the package (dpkg-deb assertions,
+      # lintian errors).
       - name: Build .deb
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: scripts/build-deb.sh --no-container --version "$VERSION" --revision 1 --out dist
+        run: scripts/build-deb.sh --no-container --skip-tests --version "$VERSION" --revision 1 --out dist
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -185,3 +198,30 @@ jobs:
             --clobber
           ls -lh dist/
           cat dist/checksums-deb.txt
+
+      # The release job wrote the Fedora instructions; append the Debian ones
+      # once (a re-run finds the package name in the notes and leaves them).
+      - name: Add the Debian install notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deb_name=$(basename dist/gswitch-auto_*.deb)
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq .body >notes.md
+          if grep -qF "$deb_name" notes.md; then
+            exit 0
+          fi
+          {
+            echo ""
+            echo "Install on Debian 12, GNOME on Xorg (replaces the upstream gswitch package):"
+            echo ""
+            echo '```bash'
+            echo "sha256sum -c checksums-deb.txt"
+            echo "sudo apt install ./$deb_name"
+            echo "systemctl --user enable --now gswitch.service"
+            echo '```'
+            echo ""
+            echo "Then log out and back in once (or Alt+F2, r) for the GNOME Shell extension. See README.md and docs/FORK.md."
+          } >>notes.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

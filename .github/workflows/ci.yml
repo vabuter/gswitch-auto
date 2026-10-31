@@ -78,9 +78,6 @@ jobs:
           env -i PATH=/nonexistent /bin/sh scripts/deb/preinst.sh
           env -i PATH=/nonexistent /bin/sh scripts/deb/postinst.sh
 
-      - name: Debian version rules (python fallback, no dpkg here)
-        run: scripts/version.sh --verify-deb
-
       # The version is <upstream base>+auto.<N>; the base comes from the
       # nearest upstream vX.Y.Z tag, which the fork's remote may not carry.
       - name: Fetch upstream release tags
@@ -92,6 +89,11 @@ jobs:
 
       - name: Version rules
         run: scripts/version.sh --verify
+
+      # dpkg --compare-versions on the Ubuntu runner (the Fedora host uses
+      # the Python port, which matches dpkg's algorithm).
+      - name: Debian version rules
+        run: scripts/version.sh --verify-deb
 
       - name: Extension check
         run: scripts/check-extension.sh --strict
@@ -179,8 +181,12 @@ jobs:
     name: Build Debian package (bookworm)
     runs-on: ubuntu-24.04
     container: docker.io/library/golang:1.26-bookworm
+    env:
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
+      # Same package list as packaging/debian12.Containerfile; git before the
+      # checkout, which otherwise downloads a tarball without tags.
       - name: Install build dependencies
         run: |
           apt-get update
@@ -193,6 +199,12 @@ jobs:
         with:
           # scripts/version.sh derives the package version from tags
           fetch-depth: 0
+
+      # The job runs as root in the container while the workspace belongs to
+      # the runner user: git refuses the "dubious" repository (and with it
+      # scripts/version.sh) unless it is marked safe for the following steps.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
@@ -223,6 +235,8 @@ jobs:
     needs: deb
     runs-on: ubuntu-24.04
     container: docker.io/library/debian:12
+    env:
+      DEBIAN_FRONTEND: noninteractive
 
     defaults:
       run:
@@ -243,15 +257,36 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl
           url=https://github.com/arumata/gswitch/releases/download/v0.8.0
+          asset=gswitch_0.8.0_linux_amd64.deb
           mkdir -p upstream
-          if ! curl -fsSL -o upstream/gswitch_0.8.0_linux_amd64.deb "$url/gswitch_0.8.0_linux_amd64.deb"; then
-            echo "::notice::upstream release v0.8.0 has no gswitch_0.8.0_linux_amd64.deb asset; testing a fresh install only"
+          if ! curl -fsSL -o "upstream/$asset" "$url/$asset"; then
+            echo "::notice::upstream release v0.8.0 has no $asset asset; testing a fresh install only"
             exit 0
           fi
           curl -fsSL -o upstream/checksums.txt "$url/checksums.txt"
-          (cd upstream && sha256sum -c --ignore-missing checksums.txt)
-          apt-get install -y ./upstream/gswitch_0.8.0_linux_amd64.deb
+          # Verify exactly this asset: its line must exist in checksums.txt.
+          (cd upstream && grep -E "^[0-9a-f]{64}  $asset\$" checksums.txt | sha256sum -c -)
+          apt-get install -y "./upstream/$asset"
           dpkg -s gswitch
+
+      # apt skips a missing Recommends/Suggests silently: check that every
+      # relation of the package names a bookworm package.
+      - name: Package relations exist in bookworm
+        run: |
+          set -euo pipefail
+          deb=$(echo dist/gswitch-auto_*.deb)
+          missing=0
+          for field in Depends Recommends Suggests; do
+            for pkg in $(dpkg-deb -f "$deb" "$field" | tr ',|' '\n\n' | sed 's/([^)]*)//g'); do
+              if apt-cache show "$pkg" >/dev/null 2>&1; then
+                echo "ok    $field: $pkg"
+              else
+                echo "$field: $pkg is not a Debian 12 package" >&2
+                missing=$((missing + 1))
+              fi
+            done
+          done
+          test "$missing" -eq 0
 
       - name: Install gswitch-auto over it
         run: |
@@ -259,6 +294,9 @@ jobs:
           (cd dist && sha256sum -c checksums-deb.txt)
           apt-get install -y ./dist/gswitch-auto_*.deb
 
+      # apt removed upstream in its own dpkg run first, so it is left as
+      # config-files (SPEC-X11 F14). preinst's marker loop is empty here (no
+      # logged-in users); the unit re-enable is checked by MX1 on the machine.
       - name: Assert replacement
         run: |
           set -euo pipefail
