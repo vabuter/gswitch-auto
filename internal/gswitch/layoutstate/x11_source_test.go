@@ -18,21 +18,31 @@ import (
 
 // x11LayoutTestConn is a scripted x11Conn: GetState returns the current group
 // (or blocks until ctx is done after blockAfter calls, like a reply the server
-// never sends) and RulesNames returns the scripted property.
+// never sends) and RulesNames returns the scripted property. pending is the
+// number of queued events DrainEvents discards; with stallOnPending GetState
+// blocks while any are queued, like xgb's reader stuck behind a full queue.
+// onState, when set, runs after every GetState that answered.
 type x11LayoutTestConn struct {
-	mu         sync.Mutex
-	group      uint8
-	stateErr   error
-	blockAfter int // GetState blocks once stateCalls exceeds this; 0 = never
-	rules      []byte
-	rulesFound bool
-	rulesErr   error
-	queryErr   error
-	useErr     error
-	stateCalls int
-	rulesCalls int
-	closed     bool
+	mu             sync.Mutex
+	group          uint8
+	stateErr       error
+	blockAfter     int // GetState blocks once stateCalls exceeds this; 0 = never
+	rules          []byte
+	rulesFound     bool
+	rulesErr       error
+	queryErr       error
+	useErr         error
+	pending        int
+	stallOnPending bool
+	onState        func()
+	stateCalls     int
+	rulesCalls     int
+	drainCalls     int
+	first          string // firstDrained
+	closed         bool
 }
+
+var _ x11DrainReporter = (*x11LayoutTestConn)(nil)
 
 // newX11LayoutTestConn scripts a connection whose _XKB_RULES_NAMES has the
 // given layouts and variants fields.
@@ -65,8 +75,8 @@ func (c *x11LayoutTestConn) UseExtension(context.Context) (uint16, uint16, error
 func (c *x11LayoutTestConn) GetState(ctx context.Context) (uint8, error) {
 	c.mu.Lock()
 	c.stateCalls++
-	block := c.blockAfter > 0 && c.stateCalls > c.blockAfter
-	group, err, closed := c.group, c.stateErr, c.closed
+	block := (c.blockAfter > 0 && c.stateCalls > c.blockAfter) || (c.stallOnPending && c.pending > 0)
+	group, err, closed, onState := c.group, c.stateErr, c.closed, c.onState
 	c.mu.Unlock()
 	if closed {
 		return 0, io.EOF
@@ -74,6 +84,9 @@ func (c *x11LayoutTestConn) GetState(ctx context.Context) (uint8, error) {
 	if block {
 		<-ctx.Done()
 		return 0, ctx.Err()
+	}
+	if onState != nil {
+		onState()
 	}
 	return group, err
 }
@@ -88,10 +101,42 @@ func (c *x11LayoutTestConn) RulesNames(context.Context) ([]byte, bool, error) {
 	return c.rules, c.rulesFound, c.rulesErr
 }
 
+func (c *x11LayoutTestConn) DrainEvents() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.drainCalls++
+	n := c.pending
+	c.pending = 0
+	if n > 0 && c.first == "" {
+		c.first = fmt.Sprintf("event MappingNotify #%d", c.drainCalls)
+	}
+	return n
+}
+
+func (c *x11LayoutTestConn) firstDrained() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.first
+}
+
 func (c *x11LayoutTestConn) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
+}
+
+// queue adds n events to the scripted event queue.
+func (c *x11LayoutTestConn) queue(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pending += n
+}
+
+// drains returns the DrainEvents and GetState call counts read together.
+func (c *x11LayoutTestConn) drains() (drain, state int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.drainCalls, c.stateCalls
 }
 
 func (c *x11LayoutTestConn) setGroup(group uint8) {
@@ -325,18 +370,176 @@ func TestX11SourceFallbackWhenRulesHaveOneLayout(t *testing.T) {
 	}
 }
 
+// TestX11SourceWarnsAboutReversedPair compares the first two table entries
+// with the configured pair (us,ru): GNOME appends the locale's layout as a
+// third entry, so the check must not depend on the table length.
 func TestX11SourceWarnsAboutReversedPair(t *testing.T) {
-	conn := newX11LayoutTestConn(0, "ru,us", ",")
+	tests := []struct {
+		name, layouts, variants string
+		engine                  string // reported for group 0
+		warning                 string // "" = no warning
+	}{
+		{"reversed two layouts", "ru,us", ",", "xkb:ru::", "Warning: X11 layout table ru,us differs from the configured pair us,ru"},
+		{"reversed with gnome locale layout", "ru,us,us", ",,", "xkb:ru::", "Warning: X11 layout table ru,us,us differs from the configured pair us,ru"},
+		{"same order", "us,ru", ",", "xkb:us::", ""},
+		{"same order with gnome locale layout", "us,ru,us", ",,", "xkb:us::", ""},
+		{"same order with ru locale layout", "us,ru,ru", ",,", "xkb:us::", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conn := newX11LayoutTestConn(0, tt.layouts, tt.variants)
+			log := &x11LayoutTestLog{}
+			src, _ := x11LayoutTestSource(log, conn)
+			sink := newRecordingSink()
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); src.Run(ctx, sink) }()
+
+			sink.waitFor(t, sinkEvent{kind: "engine", engine: tt.engine})
+			// The check runs at connect only: later table re-reads add nothing.
+			x11LayoutTestWaitCalls(t, conn, x11TableRefreshPolls+2)
+			cancel()
+			<-done
+			want := 0
+			if tt.warning != "" {
+				want = 1
+			}
+			if got := log.count("differs from the configured pair"); got != want {
+				t.Fatalf("reversed-pair warnings = %d, want %d: %q", got, want, log.all())
+			}
+			if tt.warning != "" && log.count(tt.warning) != 1 {
+				t.Fatalf("log lacks %q: %q", tt.warning, log.all())
+			}
+		})
+	}
+}
+
+func TestX11LayoutReversedPair(t *testing.T) {
+	l := func(names ...string) []Layout {
+		table := make([]Layout, len(names))
+		for i, name := range names {
+			table[i].Name = name
+		}
+		return table
+	}
+	tests := []struct {
+		table []Layout
+		want  bool
+	}{
+		{l("ru", "us"), true},
+		{l("ru", "us", "us"), true},
+		{l("ru", "us", "ru"), true},
+		{l("us", "ru"), false},
+		{l("us", "ru", "us"), false},
+		{l("us", "ru", "ru"), false},
+		{l("us", "us", "ru"), false},
+		{l("ru"), false},
+		{nil, false},
+		{[]Layout{{Name: "ru", Variant: "phonetic"}, {Name: "us", Variant: "dvorak"}}, true},
+	}
+	for _, tt := range tests {
+		if got := reversedPair(tt.table, usRu); got != tt.want {
+			t.Errorf("reversedPair(%s, us,ru) = %v, want %v", formatLayouts(tt.table), got, tt.want)
+		}
+	}
+	if reversedPair(l("us", "us"), [2]Layout{{Name: "us"}, {Name: "us"}}) {
+		t.Error("reversedPair(us,us, us,us) = true, want false")
+	}
+}
+
+// TestX11SourceDrainsEventsEveryPoll covers the event-queue drain: every poll
+// calls DrainEvents before its request, so events queued while the source
+// sleeps between polls (a full queue stalls xgb's reader and with it the
+// reply) are discarded first and replies keep flowing on the same connection;
+// the first non-empty drain is logged once per connection.
+func TestX11SourceDrainsEventsEveryPoll(t *testing.T) {
+	conn := newX11LayoutTestConn(0, "us,ru", ",")
+	conn.stallOnPending = true
+	answered := make(chan struct{}, 1)
+	conn.onState = func() {
+		select {
+		case answered <- struct{}{}:
+		default:
+		}
+	}
+	next := newX11LayoutTestConn(1, "us,ru", ",")
 	log := &x11LayoutTestLog{}
-	src, _ := x11LayoutTestSource(log, conn)
+	src, dials := x11LayoutTestSource(log, conn, next)
+	src.pollInterval = 100 * time.Millisecond // a wide gap between polls to queue events in
 	sink := newRecordingSink()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go src.Run(ctx, sink)
 
+	sink.waitFor(t, sinkEvent{kind: "engine", engine: "xkb:us::"})
+	x11LayoutTestWaitCalls(t, conn, 4)
+	drain, state := conn.drains()
+	// The connect-time read is not a poll; a poll may sit between its drain and
+	// its GetState while the counters are read.
+	if drain != state-1 && drain != state {
+		t.Fatalf("DrainEvents calls = %d for %d GetState calls, want one per poll", drain, state)
+	}
+	if got := log.count("discarded"); got != 0 {
+		t.Fatalf("empty drains logged %q", log.all())
+	}
+
+	// A full queue arrives between two polls: the next poll drains it before
+	// its request, so that request is answered on the same connection.
+	x11LayoutTestQueueBetweenPolls(t, conn, answered, 5000)
+	x11LayoutTestAwaitAnswer(t, answered)
+	conn.setGroup(1)
 	sink.waitFor(t, sinkEvent{kind: "engine", engine: "xkb:ru::"})
-	if got := log.count("Warning: X11 layout table ru,us differs from the configured pair us,ru"); got != 1 {
-		t.Fatalf("reversed-pair warnings = %d, want 1: %q", got, log.all())
+	x11LayoutTestQueueBetweenPolls(t, conn, answered, 3)
+	x11LayoutTestAwaitAnswer(t, answered)
+	conn.setGroup(0)
+	sink.waitFor(t, sinkEvent{kind: "engine", engine: "xkb:us::"})
+	if dials.Load() != 1 || conn.isClosed() {
+		t.Fatalf("dials = %d, closed = %v; want the first connection kept", dials.Load(), conn.isClosed())
+	}
+	const wantLine = "X11 layout source: discarded 5000 queued X event(s)/error(s) on display :9, the first: event MappingNotify #"
+	if got := log.count(wantLine); got != 1 {
+		t.Fatalf("drain log lines with %q = %d, want 1: %q", wantLine, got, log.all())
+	}
+	if got := log.count("discarded"); got != 1 {
+		t.Fatalf("drain log lines = %d, want 1 per connection: %q", got, log.all())
+	}
+
+	// A new connection logs its first non-empty drain again.
+	next.queue(2)
+	conn.mu.Lock()
+	conn.stateErr = io.EOF
+	conn.mu.Unlock()
+	sink.waitFor(t, sinkEvent{kind: "available", ok: false})
+	sink.waitFor(t, sinkEvent{kind: "engine", engine: "xkb:ru::"})
+	waitUntil(t, func() bool { return log.count("discarded 2 queued") == 1 })
+	if got := log.count("discarded"); got != 2 {
+		t.Fatalf("drain log lines = %d, want 2 (one per connection): %q", got, log.all())
+	}
+}
+
+// x11LayoutTestQueueBetweenPolls queues n events on conn while its source
+// sleeps between two polls: 20 ms after a fresh GetState answer, well before
+// the next tick of a 100 ms poll interval.
+func x11LayoutTestQueueBetweenPolls(t *testing.T, conn *x11LayoutTestConn, answered <-chan struct{}, n int) {
+	t.Helper()
+	select {
+	case <-answered: // drop a stale signal
+	default:
+	}
+	x11LayoutTestAwaitAnswer(t, answered)
+	time.Sleep(20 * time.Millisecond)
+	conn.queue(n)
+}
+
+// x11LayoutTestAwaitAnswer waits for the next answered GetState on the
+// connection that signals answered.
+func x11LayoutTestAwaitAnswer(t *testing.T, answered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-answered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no GetState answer within 2s: the poll after the queued events stalled")
 	}
 }
 

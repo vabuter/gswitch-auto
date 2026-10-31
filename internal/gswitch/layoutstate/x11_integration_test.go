@@ -50,6 +50,12 @@ func TestX11Integration(t *testing.T) {
 	}
 	t.Logf("display %s: XKB opcode %d version %d.%d, %s found=%v %q, group %d",
 		display, opcode, major, minor, xkbRulesNamesProperty, found, data, group)
+	// The drain never blocks; the connection selected no events, so it is
+	// normally empty (an unasked MappingNotify would be counted).
+	t.Logf("DrainEvents() = %d", raw.DrainEvents())
+	if _, err := raw.GetState(ctx); err != nil {
+		t.Fatalf("GetState() after DrainEvents error = %v", err)
+	}
 
 	table := usRu[:]
 	if parsed, ok := ParseXKBRulesNames(data); found && ok && len(parsed) >= 2 {
