@@ -3,8 +3,9 @@
 #
 # dpkg runs it as "postinst configure [most-recently-configured-version]".
 # preinst.sh recorded the users who were logged in while gswitch-auto
-# replaced the upstream gswitch package, whose prerm disabled and stopped
-# gswitch.service for them. Enable and start the unit again for those users,
+# replaced the upstream gswitch package (removed in this dpkg run, or by apt
+# in the run just before; either way its prerm disabled and stopped
+# gswitch.service for them). Enable and start the unit again for those users,
 # but only where it is not enabled, so plain gswitch-auto upgrades (no
 # markers; upstream postinstall.sh below restarts a running unit) stay
 # untouched. Then remove the markers, run the upstream postinstall.sh body
