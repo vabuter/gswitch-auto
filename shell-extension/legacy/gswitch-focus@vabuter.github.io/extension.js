@@ -166,6 +166,7 @@ class FocusReporter {
             ibusManager.connect('focus-out', () => this._onIBusFocusOut()),
             ibusManager.connect(
                 'set-content-type', (_manager, purpose, hints) => this._onIBusContentType(purpose, hints)),
+            ibusManager.connect('ready', (_manager, ready) => this._onIBusReady(ready)),
         ];
         this._inputMethodIds = [];
         if (Main.inputMethod) {
@@ -309,6 +310,20 @@ class FocusReporter {
         this._ibusSeen = true;
         this._imFocused = false;
         this._setPurpose('none');
+    }
+
+    _onIBusReady(ready) {
+        // A lost IBus connection (ibus restart, ibus-setup, a crashed
+        // ibus-daemon) is reported only as 'ready'(false), never as
+        // 'focus-out' (misc/ibusManager.js _clear()), so the last purpose
+        // would outlive the field it belongs to, e.g. through a move to a
+        // GTK password entry, which never focuses IBus on X11. 'ready'(true)
+        // is ignored: the next focus-in and set-content-type report the
+        // real purpose.
+        if (ready)
+            return;
+        this._imFocused = false;
+        this._setPurpose('unknown');
     }
 
     _onIBusContentType(purpose, hints) {
