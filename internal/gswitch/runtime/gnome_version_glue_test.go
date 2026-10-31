@@ -160,8 +160,11 @@ func TestInitTrackerForcedIBusSourceWarns(t *testing.T) {
 		info layoutstate.ShellInfo
 		want string
 	}{
+		// Wayland: the override is kept, with a warning that calls it harmful
+		// (in X11 sessions selectPlatform refuses it instead).
 		{name: "static engine", info: layoutstate.ShellInfo{Version: "43.9"},
-			want: "Warning: layout-source=ibus forces the IBus source; GNOME Shell 43.9 reports a fixed engine below 49.3"},
+			want: "Warning: layout-source=ibus forces the IBus source although GNOME Shell 43.9 reports a fixed engine below 49.3: " +
+				"every layout reads as the first one, so automatic correction misjudges words typed in the second layout"},
 		{name: "probe error", info: layoutstate.ShellInfo{Err: layoutstate.ErrShellUnavailable},
 			want: "Warning: layout-source=ibus forces the IBus source; GNOME Shell version unknown"},
 	}
