@@ -112,8 +112,10 @@ func xkbRulesNamesFields(data []byte) []string {
 
 // ParseXKBRulesNames turns the root window's _XKB_RULES_NAMES value into the
 // XKB group table: layouts "us,ru" with variants "," give [{us ""},{ru ""}],
-// "us,ru" with "dvorak," give [{us dvorak},{ru ""}]. A missing variants field
-// is all-empty; an empty layouts field yields ok=false.
+// "us,ru" with "dvorak," give [{us dvorak},{ru ""}], and GNOME's keymap with
+// the UI locale's layout appended, "us,ru,us" with ",,", gives three entries
+// (the third is never locked; it maps by name like the others). A missing
+// variants field is all-empty; an empty layouts field yields ok=false.
 func ParseXKBRulesNames(data []byte) (table []Layout, ok bool) {
 	fields := xkbRulesNamesFields(data)
 	if fields[2] == "" {
@@ -148,7 +150,17 @@ type x11Conn interface {
 	// RulesNames reads _XKB_RULES_NAMES from the root window; found is false
 	// when the property (or its atom) does not exist.
 	RulesNames(ctx context.Context) (data []byte, found bool, err error)
+	// DrainEvents discards the events and unchecked errors queued on the
+	// connection without blocking and returns how many it discarded.
+	DrainEvents() int
 	Close()
+}
+
+// x11DrainReporter is implemented by an x11Conn that remembers the first item
+// DrainEvents discarded on it, for the source's once-per-connection log line.
+type x11DrainReporter interface {
+	// firstDrained describes that item; "" when nothing was discarded yet.
+	firstDrained() string
 }
 
 // xgbConn is the production x11Conn on a dedicated jezek/xgb connection.
@@ -164,12 +176,20 @@ type xgbConn struct {
 	root      xproto.Window
 	opcode    byte
 	rulesAtom xproto.Atom // interned once per connection, 0 until found
+	first     string      // the first item DrainEvents discarded, "" until then
 }
 
-var _ x11Conn = (*xgbConn)(nil)
+var (
+	_ x11Conn          = (*xgbConn)(nil)
+	_ x11DrainReporter = (*xgbConn)(nil)
+)
 
 // x11CloseTimeout bounds xgbConn.Close.
 const x11CloseTimeout = time.Second
+
+// x11DrainLimit caps one DrainEvents call at the capacity of xgb's event queue
+// (eventBuffer in xgb.go), so a flood of events cannot keep the poll busy.
+const x11DrainLimit = 5000
 
 // dialX11 opens an xgb connection to display ("" ⇒ $DISPLAY). The handshake
 // is bounded by ctx; a connection that completes after ctx is done is closed.
@@ -285,6 +305,38 @@ func (c *xgbConn) RulesNames(ctx context.Context) ([]byte, bool, error) {
 	}
 	n := min(int(reply.ValueLen), len(reply.Value))
 	return reply.Value[:n], true, nil
+}
+
+// DrainEvents empties xgb's event queue with PollForEvent until it reports
+// (nil, nil). The connection selects no events and sends only checked
+// requests, but the server still sends some events unasked (MappingNotify goes
+// to every client when the keymap changes), and xgb's reader goroutine blocks
+// once its 5000-slot queue is full, which would hold back every later reply
+// until ReplyTimeout. PollForEvent also returns (nil, nil) for a read error or
+// a closed queue; the next request then reports the broken connection.
+func (c *xgbConn) DrainEvents() int {
+	n := 0
+	for n < x11DrainLimit {
+		ev, xerr := c.conn.PollForEvent()
+		if ev == nil && xerr == nil {
+			break
+		}
+		if c.first == "" {
+			c.first = x11DescribeQueued(ev, xerr)
+		}
+		n++
+	}
+	return n
+}
+
+func (c *xgbConn) firstDrained() string { return c.first }
+
+// x11DescribeQueued describes one item of xgb's event queue for the log.
+func x11DescribeQueued(ev xgb.Event, xerr xgb.Error) string {
+	if ev != nil {
+		return "event " + ev.String()
+	}
+	return "error " + xerr.Error()
 }
 
 // Close closes the connection and waits at most x11CloseTimeout for xgb's

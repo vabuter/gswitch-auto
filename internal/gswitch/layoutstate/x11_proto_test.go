@@ -4,6 +4,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/jezek/xgb/xproto"
 )
 
 // TestX11LayoutRequestEncoding keeps the hand-built XKB requests byte-identical
@@ -61,6 +63,7 @@ func TestParseXKBRulesNames(t *testing.T) {
 		{"variant on first", "evdev\x00pc105\x00us,ru\x00dvorak,\x00\x00", []Layout{{Name: "us", Variant: "dvorak"}, {Name: "ru"}}, true},
 		{"no trailing NUL", "evdev\x00pc105\x00us,ru\x00,phonetic\x00", []Layout{{Name: "us"}, {Name: "ru", Variant: "phonetic"}}, true},
 		{"three layouts", "evdev\x00pc105\x00us,ru,de\x00,,nodeadkeys\x00", []Layout{{Name: "us"}, {Name: "ru"}, {Name: "de", Variant: "nodeadkeys"}}, true},
+		{"gnome locale layout appended", "evdev\x00pc105\x00us,ru,us\x00,,\x00\x00", []Layout{{Name: "us"}, {Name: "ru"}, {Name: "us"}}, true},
 		{"single layout (Xwayland)", "evdev\x00pc105\x00us\x00\x00\x00", []Layout{{Name: "us"}}, true},
 		{"missing variants field", "evdev\x00pc105\x00us,ru", []Layout{{Name: "us"}, {Name: "ru"}}, true},
 		{"empty layouts", "evdev\x00pc105\x00\x00\x00\x00", nil, false},
@@ -118,5 +121,29 @@ func TestEngineForGroup(t *testing.T) {
 	}
 	if _, ok := EngineForGroup(nil, 0); ok {
 		t.Error("EngineForGroup(nil, 0) ok = true")
+	}
+	// GNOME's appended locale layout (third entry) maps by name like the others,
+	// so the never-locked third group still yields a pair index.
+	gnome, _ := ParseXKBRulesNames([]byte("evdev\x00pc105\x00us,ru,us\x00,,\x00\x00"))
+	for group, want := range []int{0, 1, 0} {
+		engine, ok := EngineForGroup(gnome, group)
+		if !ok {
+			t.Fatalf("EngineForGroup(us,ru,us, %d) ok = false", group)
+		}
+		layout, variant, _ := ParseXKBEngine(engine)
+		if got := pairIndex(usRu, Layout{Name: layout, Variant: variant}); got != want {
+			t.Errorf("group %d (%q) maps to index %d, want %d", group, engine, got, want)
+		}
+	}
+}
+
+func TestX11DescribeQueued(t *testing.T) {
+	ev := xproto.MappingNotifyEvent{Sequence: 7, Request: xproto.MappingKeyboard, FirstKeycode: 8, Count: 248}
+	if got, want := x11DescribeQueued(ev, nil), "event MappingNotify {Sequence: 7, Request: 1, FirstKeycode: 8, Count: 248}"; got != want {
+		t.Errorf("x11DescribeQueued(event) = %q, want %q", got, want)
+	}
+	xerr := xproto.ValueError{NiceName: "Value", Sequence: 9, BadValue: 3, MajorOpcode: 135}
+	if got, want := x11DescribeQueued(nil, xerr), "error BadValue {NiceName: Value, Sequence: 9, BadValue: 3, MinorOpcode: 0, MajorOpcode: 135}"; got != want {
+		t.Errorf("x11DescribeQueued(error) = %q, want %q", got, want)
 	}
 }

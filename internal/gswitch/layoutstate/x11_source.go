@@ -47,8 +47,9 @@ type X11Options struct {
 // org.gnome.desktop.input-sources sources. Engine is reported on connect and
 // whenever the derived engine name changes; identical polls are silent, so a
 // Pending state (NoteSwitchHint) is not flipped back to Confirmed by a poll.
-// Any X error, EOF or reply timeout makes the source unavailable and
-// reconnects with a 200 ms…5 s backoff.
+// Every poll first drains the connection's event queue, which nothing reads
+// otherwise. Any X error, EOF or reply timeout makes the source unavailable
+// and reconnects with a 200 ms…5 s backoff.
 type X11Source struct {
 	opts         X11Options
 	pollInterval time.Duration
@@ -74,6 +75,7 @@ type x11Session struct {
 	rules       []byte // raw _XKB_RULES_NAMES value, nil when the property is missing
 	fromRules   bool   // table comes from rules, not Fallback
 	warnedTable bool   // the Fallback warning was logged on this connection
+	drained     bool   // a non-empty event-queue drain was logged on this connection
 }
 
 // x11Dial opens connections for new sources; tests replace it.
@@ -250,7 +252,7 @@ func (s *X11Source) initSession(ctx context.Context, sess *x11Session, warn bool
 	if err := s.readTable(ctx, sess, warn); err != nil {
 		return err
 	}
-	if warn && len(sess.table) == 2 && reversedPair(sess.table, s.opts.Fallback) {
+	if warn && reversedPair(sess.table, s.opts.Fallback) {
 		s.log("Warning: X11 layout table %s differs from the configured pair %s",
 			formatLayouts(sess.table), formatLayouts(s.opts.Fallback[:]))
 	}
@@ -300,12 +302,14 @@ func (s *X11Source) getState(ctx context.Context, sess *x11Session) (uint8, erro
 	return sess.conn.GetState(rctx)
 }
 
-// poll reads the group (and re-reads the table when refresh is set or the
-// group is outside it) under the request mutex and returns the derived engine
-// name ("" when the group is still outside the table).
+// poll drains the event queue, reads the group (and re-reads the table when
+// refresh is set or the group is outside it) under the request mutex and
+// returns the derived engine name ("" when the group is still outside the
+// table).
 func (s *X11Source) poll(ctx context.Context, sess *x11Session, refresh bool) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.drainEvents(sess)
 	group, err := s.getState(ctx, sess)
 	if err != nil {
 		return "", err
@@ -317,6 +321,24 @@ func (s *X11Source) poll(ctx context.Context, sess *x11Session, refresh bool) (s
 	}
 	engine, _ := EngineForGroup(sess.table, int(group))
 	return engine, nil
+}
+
+// drainEvents empties the connection's event queue before the poll's request:
+// the source selects no events, but xgb queues whatever the server sends
+// unasked, and a full queue blocks xgb's reader and with it every reply. The
+// first non-empty drain is logged once per connection, with its first item.
+func (s *X11Source) drainEvents(sess *x11Session) {
+	n := sess.conn.DrainEvents()
+	if n == 0 || sess.drained {
+		return
+	}
+	sess.drained = true
+	first := ""
+	if r, ok := sess.conn.(x11DrainReporter); ok && r.firstDrained() != "" {
+		first = ", the first: " + r.firstDrained()
+	}
+	s.log("X11 layout source: discarded %d queued X event(s)/error(s) on display %s%s (the source selects none; further ones on this connection are discarded silently)",
+		n, s.displayName(), first)
 }
 
 // Query implements Source: XkbGetState on Run's live connection (serialised
@@ -390,10 +412,12 @@ func x11DisplayName(display string) string {
 	return "(DISPLAY unset)"
 }
 
-// reversedPair reports that table holds the names of pair in the opposite
-// order (variants ignored).
+// reversedPair reports that the first two table entries hold the names of pair
+// in the opposite order (variants ignored). Later entries are not compared:
+// GNOME appends the UI locale's layout as a third, never-locked group, so a
+// GNOME table is "us,ru,us" rather than "us,ru".
 func reversedPair(table []Layout, pair [2]Layout) bool {
-	return len(table) == 2 && table[0].Name != table[1].Name &&
+	return len(table) >= 2 && table[0].Name != table[1].Name &&
 		table[0].Name == pair[1].Name && table[1].Name == pair[0].Name
 }
 
