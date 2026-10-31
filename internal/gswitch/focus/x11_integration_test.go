@@ -27,7 +27,7 @@ func TestX11SourceAgainstDisplay(t *testing.T) {
 		t.Skip("DISPLAY is not set")
 	}
 
-	probe, err := probeX11("")
+	probe, err := probeX11(context.Background(), "")
 	if err != nil {
 		t.Fatalf("probeX11: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestX11SourceAgainstDisplay(t *testing.T) {
 // (BadWindow) is skipped; any other error fails.
 func x11FocusTestReadClients(t *testing.T) {
 	t.Helper()
-	sess, err := openX11Session(x11Dial, "")
+	sess, err := openX11Session(context.Background(), x11Dial, "")
 	if err != nil {
 		t.Fatalf("open X11 session: %v", err)
 	}

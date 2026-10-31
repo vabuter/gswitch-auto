@@ -62,7 +62,7 @@ func RunDiagnostics(ctx context.Context, w io.Writer, opts DiagOptions) error {
 	case !opts.X11Enabled:
 		pw.printf("X11: off\n")
 	default:
-		st, err := probeX11(opts.Display)
+		st, err := probeX11(ctx, opts.Display)
 		if err != nil {
 			pw.printf("X11: error: %v\n", err)
 			if firstErr == nil {
@@ -120,13 +120,17 @@ func probeExtension(ctx context.Context) (State, error) {
 	return st, nil
 }
 
-// probeX11 reads the active window once over a temporary connection.
-func probeX11(display string) (X11State, error) {
-	sess, err := openX11Session(x11Dial, display)
+// probeX11 reads the active window once over a temporary connection. The
+// connect is bounded by ctx (and x11ConnectTimeout), every reply by
+// x11ReplyTimeout; a cancelled ctx (Ctrl+C) closes the connection.
+func probeX11(ctx context.Context, display string) (X11State, error) {
+	sess, err := openX11Session(ctx, x11Dial, display)
 	if err != nil {
 		return X11State{}, err
 	}
 	defer sess.close()
+	stop := context.AfterFunc(ctx, sess.close)
+	defer stop()
 	return sess.read()
 }
 

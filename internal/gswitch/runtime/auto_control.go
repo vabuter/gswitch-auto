@@ -150,7 +150,8 @@ func (s *Switcher) autoInputIdle() bool {
 
 // autoEmit replays an automatic fix (or its undo). The layout switch is
 // always confirmed through the tracker, whatever the verify flags say (C26):
-// when the shortcut is dropped nothing is typed.
+// when the shortcut is dropped nothing is typed. How the switch is triggered
+// and how long it is awaited depends on the binding (autoSwitchPlan).
 func (s *Switcher) autoEmit(events []KeyEvent) error {
 	st := s.userSettings()
 	delay := time.Duration(st.DelayMs) * time.Millisecond
@@ -168,6 +169,7 @@ func (s *Switcher) autoEmit(events []KeyEvent) error {
 		delay:       delay,
 		switchDelay: switchDelay,
 		confirm:     true,
+		plan:        s.autoSwitchPlan(),
 	})
 }
 

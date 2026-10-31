@@ -31,6 +31,27 @@ lxterminal
 urxvt
 st-256color
 
+# X11 input-method clients whose password fields look like ordinary text
+# fields. XIM clients (ibus-x11 never sets a content type, so every field is
+# reported as "normal") and Qt applications (Qt does not tell IBus when the
+# focus moves to a password line edit) are corrected even with
+# auto-strict-purpose on; this list is their only protection.
+rxvt                      # rxvt ("URxvt" is urxvt above)
+aterm
+eterm
+mlterm
+kterm
+st                        # suckless st without the -256color class
+emacs                     # GNU Emacs uses XIM on X11
+sun-awt-x11-*             # Java AWT/Swing windows
+*.exe                     # Wine applications
+pinentry-qt               # Qt passphrase prompts
+pinentry-qt5
+ksshaskpass
+org.kde.ksshaskpass
+kwalletmanager5
+kleopatra
+
 # Password managers
 org.keepassxc.keepassxc
 keepassxc                 # WM_CLASS "keepassxc"/"KeePassXC"

@@ -192,10 +192,10 @@ func (c *x11FocusTestConn) setBlockReads() {
 	c.blockReads = true
 }
 
-func x11FocusTestDialer(conns ...*x11FocusTestConn) func(string) (x11Conn, error) {
+func x11FocusTestDialer(conns ...*x11FocusTestConn) func(context.Context, string) (x11Conn, error) {
 	var mu sync.Mutex
 	calls := 0
-	return func(string) (x11Conn, error) {
+	return func(context.Context, string) (x11Conn, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		conn := conns[min(calls, len(conns)-1)]
@@ -227,7 +227,7 @@ func (r *x11FocusTestRecorder) all() []X11State {
 	return append([]X11State(nil), r.states...)
 }
 
-func x11FocusTestStart(t *testing.T, dial func(string) (x11Conn, error), rec *x11FocusTestRecorder) *X11Source {
+func x11FocusTestStart(t *testing.T, dial func(context.Context, string) (x11Conn, error), rec *x11FocusTestRecorder) *X11Source {
 	t.Helper()
 	opts := X11Options{Display: ":99", Logf: t.Logf}
 	if rec != nil {
@@ -495,7 +495,7 @@ func TestX11SourceWithoutDisplay(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
 	s := NewX11Source(X11Options{Logf: t.Logf})
-	s.dial = func(string) (x11Conn, error) {
+	s.dial = func(context.Context, string) (x11Conn, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		attempts++

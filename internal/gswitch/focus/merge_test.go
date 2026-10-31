@@ -177,7 +177,7 @@ func TestMergedNilSafe(t *testing.T) {
 	// Only the X11 side, without a display.
 	m = NewMerged(MergedOptions{Logf: t.Logf})
 	src := NewX11Source(X11Options{OnChange: m.X11Changed})
-	src.dial = func(string) (x11Conn, error) { return nil, errors.New("no display") }
+	src.dial = func(context.Context, string) (x11Conn, error) { return nil, errors.New("no display") }
 	src.retryMin, src.retryMax = 5*time.Millisecond, 10*time.Millisecond
 	m.SetX11(src)
 	m.Start(ctx)
@@ -267,7 +267,7 @@ func TestRunDiagnosticsSourcesOff(t *testing.T) {
 func TestRunDiagnosticsX11(t *testing.T) {
 	saved := x11Dial
 	t.Cleanup(func() { x11Dial = saved })
-	x11Dial = func(string) (x11Conn, error) { return x11FocusTestTerminalConn(), nil }
+	x11Dial = func(context.Context, string) (x11Conn, error) { return x11FocusTestTerminalConn(), nil }
 
 	var buf bytes.Buffer
 	err := RunDiagnostics(context.Background(), &buf, DiagOptions{Display: ":99", X11Enabled: true, Policy: Policy{}})
@@ -311,7 +311,7 @@ func TestRunDiagnosticsX11Error(t *testing.T) {
 	saved := x11Dial
 	t.Cleanup(func() { x11Dial = saved })
 	boom := errors.New("boom")
-	x11Dial = func(string) (x11Conn, error) { return nil, boom }
+	x11Dial = func(context.Context, string) (x11Conn, error) { return nil, boom }
 
 	var buf bytes.Buffer
 	err := RunDiagnostics(context.Background(), &buf, DiagOptions{X11Enabled: true, Watch: time.Second})

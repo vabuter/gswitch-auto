@@ -16,6 +16,7 @@ import (
 	"github.com/jezek/xgb/xproto"
 
 	"github.com/arumata/gswitch/internal/gswitch/detect"
+	"github.com/arumata/gswitch/internal/gswitch/x11conn"
 )
 
 // gswitch-auto: X11 focus source (SPEC-X11 §3.2.1). In an X11 session the
@@ -36,6 +37,12 @@ const (
 	// _NET_ACTIVE_WINDOW.
 	x11PropertyMaxLen  = 256
 	x11ActiveWindowLen = 1
+	// x11ConnectTimeout bounds the socket connect and the X connection setup;
+	// x11ReplyTimeout bounds every reply (InternAtom, the event-mask Check,
+	// GetProperty). A reply that does not arrive in time ends the session
+	// like a lost connection.
+	x11ConnectTimeout = 2 * time.Second
+	x11ReplyTimeout   = time.Second
 
 	x11AtomNetActiveWindow  = "_NET_ACTIVE_WINDOW"
 	x11AtomGtkApplicationID = "_GTK_APPLICATION_ID"
@@ -57,6 +64,9 @@ var (
 	// errX11Disconnected ends a session whose event stream closed while the
 	// source was still running.
 	errX11Disconnected = errors.New("X11 connection closed")
+	// errX11ReplyTimeout is wrapped by a request whose reply did not arrive
+	// within x11ReplyTimeout (a hung or stalled server); it ends the session.
+	errX11ReplyTimeout = errors.New("no reply from the X server")
 )
 
 // X11State is the raw X11 view (no purpose information exists on X11).
@@ -83,14 +93,18 @@ type X11Options struct {
 // active window it reads WM_CLASS (class part) and _GTK_APPLICATION_ID; a
 // window that is already gone (BadWindow) yields Window 0 and empty fields.
 // On connection loss the source publishes Connected=false once and
-// reconnects with the client's 1 s..30 s backoff. Start, Close and Snapshot
-// behave like Client's (lock-free atomic snapshots).
+// reconnects with the client's 1 s..30 s backoff. The connect and setup are
+// bounded by ctx and x11ConnectTimeout, every reply by x11ReplyTimeout (a
+// reply that does not come ends the session like a lost connection), and the
+// connection is closed as soon as ctx ends, so Close never waits on a hung
+// server. Start, Close and Snapshot behave like Client's (lock-free atomic
+// snapshots).
 type X11Source struct {
 	opts  X11Options
 	state atomic.Pointer[X11State]
 
 	// Test hooks; production values are set by NewX11Source.
-	dial     func(display string) (x11Conn, error)
+	dial     func(ctx context.Context, display string) (x11Conn, error)
 	retryMin time.Duration
 	retryMax time.Duration
 
@@ -195,29 +209,34 @@ func (s *X11Source) run(ctx context.Context) {
 // reports that the connection was opened (its view must be reset),
 // established that the subscription was installed and a state published.
 func (s *X11Source) session(ctx context.Context) (connected, established bool, err error) {
-	sess, err := openX11Session(s.dial, s.opts.Display)
+	conn, err := s.dial(ctx, s.opts.Display)
 	if err != nil {
-		return false, false, err
+		return false, false, fmt.Errorf("connect to X11: %w", err)
 	}
-	defer sess.close()
+	defer conn.Close()
 
 	// WaitForEvent has no context; closing the connection is the only way to
-	// unblock the loop on shutdown. The wrapper's Close is idempotent.
+	// unblock the loop (and any pending reply) on shutdown, so the watcher
+	// starts before the first request. The wrapper's Close is idempotent.
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
 		select {
 		case <-ctx.Done():
-			sess.close()
+			conn.Close()
 		case <-stop:
 		}
 	}()
 
+	sess, err := newX11Session(conn)
+	if err != nil {
+		return true, false, err
+	}
 	if err := sess.conn.SelectPropertyChanges(sess.root); err != nil {
 		return true, false, fmt.Errorf("select PropertyNotify on the root window: %w", err)
 	}
-	if !s.publish(ctx, sess) {
-		return true, false, errX11Disconnected
+	if err := s.publish(ctx, sess); err != nil {
+		return true, false, err
 	}
 
 	for {
@@ -232,28 +251,32 @@ func (s *X11Source) session(ctx context.Context) (connected, established bool, e
 		if ev.Window != sess.root || ev.Atom != sess.atomActive {
 			continue
 		}
-		if !s.publish(ctx, sess) {
-			return true, true, errX11Disconnected
+		if err := s.publish(ctx, sess); err != nil {
+			return true, true, err
 		}
 	}
 }
 
 // publish reads the active window and commits the result. Any read error
-// other than a closed connection is logged and the window identity is empty
-// for this round. It reports false, publishing nothing, when the connection
-// closed during the read (server gone, or Close/ctx shutting the session
-// down): the caller ends the session, so a lost connection yields exactly one
-// Connected=false change and a shutdown none.
-func (s *X11Source) publish(ctx context.Context, sess *x11Session) bool {
+// other than a closed connection or a reply timeout is logged and the window
+// identity is empty for this round. It returns an error, publishing nothing,
+// when the connection closed during the read (server gone, or Close/ctx
+// shutting the session down) or the server did not answer within
+// x11ReplyTimeout: the caller ends the session, so a lost or hung connection
+// yields exactly one Connected=false change and a shutdown none.
+func (s *X11Source) publish(ctx context.Context, sess *x11Session) error {
 	st, err := sess.read()
 	if err != nil {
-		if errors.Is(err, io.EOF) || ctx.Err() != nil {
-			return false
+		switch {
+		case errors.Is(err, io.EOF) || ctx.Err() != nil:
+			return errX11Disconnected
+		case errors.Is(err, errX11ReplyTimeout):
+			return err
 		}
 		s.logf("focus: x11: %v", err)
 	}
 	s.commit(st)
-	return true
+	return nil
 }
 
 // onDisconnected resets the view after the connection was lost; the next
@@ -364,33 +387,56 @@ type x11Conn interface {
 // x11Dial opens the production connection; tests replace it.
 var x11Dial = dialX11
 
-func dialX11(display string) (x11Conn, error) {
+// dialX11 connects to display ("" ⇒ $DISPLAY) through x11conn.Dial: the
+// socket connect and the connection setup are bounded by ctx and
+// x11ConnectTimeout and leave nothing behind on expiry. A screen number the
+// server does not have is an error.
+func dialX11(ctx context.Context, display string) (x11Conn, error) {
 	if display == "" && os.Getenv("DISPLAY") == "" {
 		return nil, errors.New("DISPLAY is not set")
 	}
-	conn, err := xgb.NewConnDisplay(display)
+	dialCtx, cancel := context.WithTimeout(ctx, x11ConnectTimeout)
+	defer cancel()
+	conn, err := x11conn.Dial(dialCtx, display)
 	if err != nil {
 		return nil, err
 	}
-	setup := xproto.Setup(conn)
-	if conn.DefaultScreen < 0 || conn.DefaultScreen >= len(setup.Roots) {
+	root, err := conn.DefaultRoot()
+	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("default screen %d is not one of the %d screens", conn.DefaultScreen, len(setup.Roots))
+		return nil, err
 	}
-	return &x11XGBConn{conn: conn, root: uint32(setup.Roots[conn.DefaultScreen].Root)}, nil
+	return &x11XGBConn{x: conn, conn: conn.X(), root: uint32(root), replyTimeout: x11ReplyTimeout}, nil
 }
 
-// x11XGBConn implements x11Conn on jezek/xgb.
+// x11XGBConn implements x11Conn on jezek/xgb. Every reply is bounded by
+// replyTimeout (x11conn.Await); Close is bounded by x11conn.CloseTimeout and
+// makes every pending reply return io.EOF.
 type x11XGBConn struct {
-	conn *xgb.Conn
-	root uint32
-	once sync.Once
+	x            *x11conn.Conn
+	conn         *xgb.Conn
+	root         uint32
+	replyTimeout time.Duration
+}
+
+// x11Await bounds one reply by timeout; on expiry the error wraps
+// errX11ReplyTimeout.
+func x11Await[T any](timeout time.Duration, call func() (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	value, err := x11conn.Await(ctx, call)
+	if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil {
+		return value, fmt.Errorf("%w within %v", errX11ReplyTimeout, timeout)
+	}
+	return value, err
 }
 
 func (c *x11XGBConn) Root() uint32 { return c.root }
 
 func (c *x11XGBConn) InternAtom(name string) (uint32, error) {
-	reply, err := xproto.InternAtom(c.conn, false, uint16(len(name)), name).Reply()
+	reply, err := x11Await(c.replyTimeout, func() (*xproto.InternAtomReply, error) {
+		return xproto.InternAtom(c.conn, false, uint16(len(name)), name).Reply()
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -401,14 +447,19 @@ func (c *x11XGBConn) InternAtom(name string) (uint32, error) {
 }
 
 func (c *x11XGBConn) SelectPropertyChanges(window uint32) error {
-	return xproto.ChangeWindowAttributesChecked(c.conn, xproto.Window(window),
-		xproto.CwEventMask, []uint32{xproto.EventMaskPropertyChange}).Check()
+	_, err := x11Await(c.replyTimeout, func() (struct{}, error) {
+		return struct{}{}, xproto.ChangeWindowAttributesChecked(c.conn, xproto.Window(window),
+			xproto.CwEventMask, []uint32{xproto.EventMaskPropertyChange}).Check()
+	})
+	return err
 }
 
 func (c *x11XGBConn) GetProperty(window, property, typ, length uint32) ([]byte, error) {
 	// xgb's Reply returns io.EOF itself once the connection is closed.
-	reply, err := xproto.GetProperty(c.conn, false, xproto.Window(window),
-		xproto.Atom(property), xproto.Atom(typ), 0, length).Reply()
+	reply, err := x11Await(c.replyTimeout, func() (*xproto.GetPropertyReply, error) {
+		return xproto.GetProperty(c.conn, false, xproto.Window(window),
+			xproto.Atom(property), xproto.Atom(typ), 0, length).Reply()
+	})
 	if err != nil {
 		var bad xproto.WindowError
 		if errors.As(err, &bad) {
@@ -438,7 +489,7 @@ func (c *x11XGBConn) NextPropertyNotify() (x11PropertyNotify, error) {
 }
 
 func (c *x11XGBConn) Close() {
-	c.once.Do(c.conn.Close)
+	c.x.Close()
 }
 
 // x11Session is one open connection with the atoms it needs interned.
@@ -450,11 +501,23 @@ type x11Session struct {
 	atomUTF8     uint32
 }
 
-func openX11Session(dial func(string) (x11Conn, error), display string) (*x11Session, error) {
-	conn, err := dial(display)
+// openX11Session dials display and interns the atoms; the caller closes the
+// session. The dial is bounded by ctx.
+func openX11Session(ctx context.Context, dial func(context.Context, string) (x11Conn, error), display string) (*x11Session, error) {
+	conn, err := dial(ctx, display)
 	if err != nil {
 		return nil, fmt.Errorf("connect to X11: %w", err)
 	}
+	sess, err := newX11Session(conn)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return sess, nil
+}
+
+// newX11Session interns the atoms on conn. It does not close conn.
+func newX11Session(conn x11Conn) (*x11Session, error) {
 	sess := &x11Session{conn: conn, root: conn.Root()}
 	for _, atom := range []struct {
 		name string
@@ -466,7 +529,6 @@ func openX11Session(dial func(string) (x11Conn, error), display string) (*x11Ses
 	} {
 		value, err := conn.InternAtom(atom.name)
 		if err != nil {
-			conn.Close()
 			return nil, fmt.Errorf("intern atom %s: %w", atom.name, err)
 		}
 		*atom.dst = value

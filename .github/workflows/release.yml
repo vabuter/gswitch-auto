@@ -1,9 +1,12 @@
 # Release workflow for gswitch-auto (fork of gswitch)
 # Triggered by pushing a fork tag v<upstream>+auto.<N> (e.g. v0.8.0+auto.1).
 # Builds the RPM with scripts/build-rpm.sh (tests and RPM assertions included)
-# and publishes it with checksums.txt as a GitHub release; then builds the
-# Debian 12 package with scripts/build-deb.sh in the golang:1.26-bookworm image
-# and uploads it with checksums-deb.txt to the same release (SPEC-X11 §3.8.5).
+# and the Debian 12 package with scripts/build-deb.sh in the
+# golang:1.26-bookworm image (SPEC-X11 §3.8.5), in parallel. Only when both
+# packages were built and passed their checks does the publish job create the
+# GitHub release, with both packages, both checksum files and the complete
+# install notes in one step: a failing deb check never leaves a published
+# RPM-only release behind for the tag.
 # Uses only the automatic GITHUB_TOKEN; no repository secrets. Upstream's OBS
 # job is not part of the fork (obs.yml stays guarded to arumata/gswitch).
 
@@ -19,9 +22,13 @@ permissions:
 
 jobs:
   release:
+    name: Build RPM
     # "+" is a glob repeat operator in tag filters, so select fork tags here.
     if: contains(github.ref_name, '+auto.')
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      base: ${{ steps.version.outputs.base }}
 
     steps:
       - name: Checkout
@@ -63,6 +70,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "base=$(scripts/version.sh --base)" >>"$GITHUB_OUTPUT"
 
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
@@ -72,42 +80,24 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: scripts/build-rpm.sh --version "$VERSION" --release 1 --out dist
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          base=$(scripts/version.sh --base)
-          rpm_name="gswitch-auto-$VERSION-1.x86_64.rpm"
-          {
-            echo "gswitch-auto $VERSION: fork of [gswitch](https://github.com/arumata/gswitch) v$base with automatic us/ru correction for GNOME Wayland + IBus."
-            echo ""
-            echo "Install on Fedora (replaces the upstream gswitch package):"
-            echo ""
-            echo '```bash'
-            echo "sha256sum -c checksums.txt"
-            echo "sudo dnf install ./$rpm_name"
-            echo "systemctl --user enable --now gswitch.service"
-            echo '```'
-            echo ""
-            echo "Then log out and back in once for the GNOME Shell extension. See README.md and docs/FORK.md."
-          } >notes.md
-          gh release create "$GITHUB_REF_NAME" "dist/$rpm_name" dist/checksums.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "gswitch-auto $VERSION" \
-            --notes-file notes.md \
-            --verify-tag
-
       - name: List release artifacts
         run: |
           ls -lh dist/
           cat dist/checksums.txt
 
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rpm
+          path: |
+            dist/*.rpm
+            dist/checksums.txt
+          if-no-files-found: error
+
   # Same image as `make deb` (packaging/debian12.Containerfile): Debian 12 has
   # no Go 1.25+, and the binaries must link against the bookworm userland.
   deb:
     name: Build Debian package (bookworm)
-    needs: release
     if: contains(github.ref_name, '+auto.')
     runs-on: ubuntu-24.04
     container: docker.io/library/golang:1.26-bookworm
@@ -155,10 +145,10 @@ jobs:
           fi
           echo "version=$version" >>"$GITHUB_OUTPUT"
 
-      # The tests ran in the release job (scripts/build-rpm.sh) for this
+      # The tests run in the release job (scripts/build-rpm.sh) for this
       # commit; this job runs as root, where the tests that expect permission
       # errors do not hold. It checks the package (dpkg-deb assertions,
-      # lintian errors).
+      # lintian errors); the publish job needs both jobs.
       - name: Build .deb
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -173,46 +163,51 @@ jobs:
             dist/checksums-deb.txt
           if-no-files-found: error
 
-  # `gh` is on the ubuntu runner, not in the golang image: attach the
-  # package to the release created by the rpm job from here.
-  publish-deb:
-    name: Attach Debian package to the release
-    needs: deb
+  # `gh` is on the ubuntu runner, not in the golang image. Nothing is
+  # published before both packages were built and checked: the release is
+  # created once, with every asset and the complete notes.
+  publish:
+    name: Publish GitHub release
+    needs: [release, deb]
     runs-on: ubuntu-24.04
 
     steps:
+      - name: Download RPM artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rpm
+          path: dist
+
       - name: Download .deb artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: deb
           path: dist
 
-      - name: Upload to the GitHub release
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release.outputs.version }}
+          BASE: ${{ needs.release.outputs.base }}
         run: |
           set -euo pipefail
-          (cd dist && sha256sum -c checksums-deb.txt)
-          gh release upload "$GITHUB_REF_NAME" dist/gswitch-auto_*.deb dist/checksums-deb.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
-          ls -lh dist/
-          cat dist/checksums-deb.txt
-
-      # The release job wrote the Fedora instructions; append the Debian ones
-      # once (a re-run finds the package name in the notes and leaves them).
-      - name: Add the Debian install notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          deb_name=$(basename dist/gswitch-auto_*.deb)
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --json body --jq .body >notes.md
-          if grep -qF "$deb_name" notes.md; then
-            exit 0
-          fi
+          (cd dist && sha256sum -c checksums.txt && sha256sum -c checksums-deb.txt)
+          rpm_name="gswitch-auto-$VERSION-1.x86_64.rpm"
+          deb_name="gswitch-auto_$VERSION-1_amd64.deb"
+          test -f "dist/$rpm_name"
+          test -f "dist/$deb_name"
           {
+            echo "gswitch-auto $VERSION: fork of [gswitch](https://github.com/arumata/gswitch) v$BASE with automatic us/ru correction for GNOME (Wayland + IBus on Fedora, X11 on Debian 12)."
+            echo ""
+            echo "Install on Fedora (replaces the upstream gswitch package):"
+            echo ""
+            echo '```bash'
+            echo "sha256sum -c checksums.txt"
+            echo "sudo dnf install ./$rpm_name"
+            echo "systemctl --user enable --now gswitch.service"
+            echo '```'
+            echo ""
+            echo "Then log out and back in once for the GNOME Shell extension."
             echo ""
             echo "Install on Debian 12, GNOME on Xorg (replaces the upstream gswitch package):"
             echo ""
@@ -223,5 +218,11 @@ jobs:
             echo '```'
             echo ""
             echo "Then log out and back in once (or Alt+F2, r) for the GNOME Shell extension. See README.md and docs/FORK.md."
-          } >>notes.md
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          } >notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/$rpm_name" dist/checksums.txt "dist/$deb_name" dist/checksums-deb.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "gswitch-auto $VERSION" \
+            --notes-file notes.md \
+            --verify-tag
+          ls -lh dist/

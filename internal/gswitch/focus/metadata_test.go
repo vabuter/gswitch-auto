@@ -192,7 +192,7 @@ func TestExtensionTreesShareHelpers(t *testing.T) {
 	trees := legacyExtTestTrees()
 	esm := legacyExtTestRead(t, filepath.Join(trees[0].dir, "extension.js"))
 	legacy := legacyExtTestRead(t, filepath.Join(trees[1].dir, "extension.js"))
-	for _, name := range []string{"hintMask", "securePurpose", "purposeTable"} {
+	for _, name := range []string{"hintMask", "securePurpose", "purposeTable", "clutterFallbackPurpose"} {
 		if a, b := focusTestJSFunction(t, esm, name), focusTestJSFunction(t, legacy, name); a != b {
 			t.Errorf("function %s differs between the ESM and legacy trees:\n--- esm\n%s\n--- legacy\n%s", name, a, b)
 		}
@@ -389,13 +389,19 @@ console.log(emitted.join('\n'));
 
 // TestCheckExtensionScript runs scripts/check-extension.sh, which repeats the
 // checks above from the packaging side (nfpm.yaml entries, node --check of
-// both module formats). --strict (node required) applies in CI.
+// both module formats) and drives both trees through scripts/extension-sim.cjs
+// (among others: on X11 without IBus, a Clutter purpose left by a GNOME Shell
+// entry is reset to "unknown" once the focus moves to an X11 window). --strict
+// (node required) applies in CI.
 func TestCheckExtensionScript(t *testing.T) {
 	repoRoot := filepath.Join("..", "..", "..")
 	script := filepath.Join(repoRoot, "scripts", "check-extension.sh")
 	// The script reads these files itself; read them here too so that the
 	// test cache is keyed on their contents.
-	for _, path := range []string{script, filepath.Join(repoRoot, "packaging", "nfpm.yaml"), "state.go"} {
+	for _, path := range []string{
+		script, filepath.Join(repoRoot, "scripts", "extension-sim.cjs"),
+		filepath.Join(repoRoot, "packaging", "nfpm.yaml"), "state.go",
+	} {
 		legacyExtTestRead(t, path)
 	}
 	for _, tree := range legacyExtTestTrees() {

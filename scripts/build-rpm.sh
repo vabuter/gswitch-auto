@@ -14,7 +14,7 @@
 #
 # Steps: preflight (tools, every source path the RPM packages — entries marked
 # `packager: deb` in nfpm.yaml belong to scripts/build-deb.sh —, version
-# rules, extension consistency) -> go test ./... -> CGO build of builds/gswitch and
+# rules, extension consistency, Go licence notices) -> go test ./... -> CGO build of builds/gswitch and
 # builds/gswitch-tray with -X main.version=V -> nfpm -> sha256 checksums.txt ->
 # metadata assertions on the RPM (rpm -qp) -> upgrade dry run (rpm -U --test)
 # when upstream gswitch or an older gswitch-auto is installed on this host.
@@ -225,6 +225,9 @@ GSWITCH_VERSION=$version scripts/version.sh --verify
 step "Extension consistency"
 scripts/check-extension.sh
 
+step "Go licence notices"
+scripts/go-licenses.sh --check
+
 # --- test and build --------------------------------------------------------
 if [[ $skip_tests == true ]]; then
     step "Tests skipped (--skip-tests)"
@@ -334,6 +337,7 @@ for f in \
     /usr/share/licenses/gswitch-auto/hunspell-ru-LICENSE \
     /usr/share/licenses/gswitch-auto/THIRD-PARTY-NOTICES.md \
     /usr/share/licenses/gswitch-auto/clipboard-LICENSE \
+    /usr/share/licenses/gswitch-auto/GO-LICENSES.txt \
     /usr/share/doc/gswitch-auto/README.md; do
     expect_line "contains $f" "$files" "$f"
 done

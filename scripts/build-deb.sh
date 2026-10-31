@@ -4,6 +4,7 @@
 #
 # Usage: scripts/build-deb.sh [--version V] [--revision R] [--out DIR]
 #                             [--skip-tests] [--no-container] [--image IMG]
+#                             [--upstream-unit FILE]
 #
 #   --version V     package version (default: output of scripts/version.sh)
 #   --revision R    Debian revision (default: 1)
@@ -15,6 +16,14 @@
 #                   nfpm, dpkg-deb, dpkg, lintian and python3 (what the
 #                   image provides); CI uses it inside the same image
 #   --image IMG     image tag (default: localhost/gswitch-auto-deb:bookworm)
+#   --upstream-unit FILE
+#                   upstream's configs/gswitch.service to compare the packaged
+#                   user unit with (SPEC D2); default: `git show
+#                   v<base>:configs/gswitch.service`. Container mode extracts
+#                   it on the host and passes it in, because a worktree's git
+#                   directory is outside the /src mount. Without the tag and
+#                   without this option the build fails: the unit is never
+#                   compared with itself.
 #
 # Environment: PODMAN (container engine, default: podman), NFPM (nfpm
 # executable; default: nfpm on PATH, then ~/go/bin/nfpm, then
@@ -30,13 +39,16 @@
 # download needs network access (the tree has no vendor/).
 #
 # Steps inside: preflight (tools, every source path the deb packages, Debian
-# version rules, extension consistency, scriptlet marker identity and
+# version rules, extension consistency, Go licence notices
+# (scripts/go-licenses.sh --check), scriptlet marker identity and
 # empty-environment tolerance) -> go test ./... -> CGO build of
 # builds/deb/gswitch and builds/deb/gswitch-tray with -X main.version=V
-# (never over the host binaries in builds/) -> nfpm -> sha256
-# checksums-deb.txt -> assertions on the package (dpkg-deb -I/-c/-e/-x) ->
-# lintian (error tags are fatal; warnings and info tags are listed, never
-# fatal).
+# (never over the host binaries in builds/) -> nfpm into a work directory ->
+# assertions on the package (dpkg-deb -I/-c/-e/-x) -> lintian (error tags
+# are fatal; warnings and info tags are listed, never fatal) -> only then the
+# .deb and its sha256 checksums-deb.txt are moved into the output directory.
+# A package that fails a check is deleted and never reaches it; an older
+# checksums-deb.txt there is removed before the build starts.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
@@ -54,6 +66,7 @@ out=dist
 skip_tests=false
 in_container=true
 image=$default_image
+upstream_unit=""
 
 die() {
     printf 'build-deb: %s\n' "$*" >&2
@@ -116,6 +129,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --image=*)
             image=${1#*=}
+            shift
+            ;;
+        --upstream-unit)
+            need_arg "$@"
+            upstream_unit=$2
+            shift 2
+            ;;
+        --upstream-unit=*)
+            upstream_unit=${1#*=}
             shift
             ;;
         -h | --help)
@@ -247,6 +269,25 @@ if [[ $in_container == true ]]; then
         inner_args+=(--skip-tests)
     fi
 
+    # The packaged user unit is compared with upstream's (SPEC D2). Inside the
+    # container git may not resolve the tag (a worktree's git directory is
+    # outside the /src mount), so the reference is extracted here and mounted
+    # read-only.
+    ref_dir=$(mktemp -d)
+    trap 'rm -rf "$ref_dir"' EXIT
+    if [[ -n $upstream_unit ]]; then
+        [[ -f $upstream_unit ]] || die "--upstream-unit $upstream_unit: not a file"
+        cp -- "$upstream_unit" "$ref_dir/gswitch.service"
+    else
+        base=$(GSWITCH_VERSION=$version scripts/version.sh --base)
+        git show "v$base:configs/gswitch.service" >"$ref_dir/gswitch.service" 2>/dev/null ||
+            die "cannot read configs/gswitch.service of upstream tag v$base (git fetch upstream --tags, or pass --upstream-unit FILE)"
+    fi
+    chmod 0755 "$ref_dir"
+    chmod 0644 "$ref_dir/gswitch.service"
+    mount_args+=(-v "$ref_dir:/upstream-ref:ro")
+    inner_args+=(--upstream-unit /upstream-ref/gswitch.service)
+
     step "Build inside $image"
     "$podman" run --rm --userns=keep-id --security-opt label=disable \
         -v "$repo_root:/src" -w /src "${mount_args[@]}" \
@@ -256,6 +297,10 @@ if [[ $in_container == true ]]; then
         -e "GSWITCH_VERSION=$version" -e "GSWITCH_RELEASE=$revision" \
         "$image" scripts/build-deb.sh "${inner_args[@]}"
     exit 0
+fi
+
+if [[ -n $upstream_unit && ! -f $upstream_unit ]]; then
+    die "--upstream-unit $upstream_unit: not a file"
 fi
 
 # --- preflight ---------------------------------------------------------------
@@ -308,6 +353,9 @@ GSWITCH_VERSION=$version scripts/version.sh --verify-deb
 
 step "Extension consistency"
 scripts/check-extension.sh
+
+step "Go licence notices"
+scripts/go-licenses.sh --check
 
 step "Maintainer scripts"
 # check_scriptlet_markers DEB_SCRIPT UPSTREAM: the lines of DEB_SCRIPT between
@@ -363,13 +411,18 @@ step "Package"
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 deb_name="gswitch-auto_${version}-${revision}_amd64.deb"
-deb_file="$out/$deb_name"
-rm -f "$deb_file"
+# Never leave a package that has not passed the checks below next to a
+# checksum that verifies it: drop the previous result first and build into a
+# work directory; the .deb and checksums-deb.txt reach $out only at the end.
+rm -f "$out/$deb_name" "$out/checksums-deb.txt"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/pkg"
+deb_file="$tmp/pkg/$deb_name"
 GSWITCH_VERSION=$version GSWITCH_RELEASE=$revision \
     "${nfpm_cmd[@]}" package --config "$nfpm_yaml" --packager deb --target "$deb_file"
 [[ -f $deb_file ]] || die "nfpm did not produce $deb_file"
-(cd "$out" && sha256sum "$deb_name" >checksums-deb.txt)
-printf 'wrote %s and %s/checksums-deb.txt\n' "$deb_file" "$out"
+printf 'built %s (checked before it is moved to %s)\n' "$deb_name" "$out"
 
 # --- assertions --------------------------------------------------------------
 step "Package assertions"
@@ -407,9 +460,12 @@ expect "Priority is optional" test "$(field Priority)" = optional
 expect "Maintainer is 'Name <address>' (lintian: maintainer-address-malformed)" \
     grep -Eq '^[^<>]+ <[^<>@[:space:]]+@[^<>@[:space:]]+>$' <<<"$(field Maintainer)"
 expect "Homepage is set" test -n "$(field Homepage)"
-for dep in 'libc6 (>= 2.34)' systemd libgtk-3-0 libx11-6 libglib2.0-bin policykit-1 x11-xkb-utils; do
+for dep in 'libc6 (>= 2.34)' systemd libgtk-3-0 libx11-6 libglib2.0-bin polkitd pkexec x11-xkb-utils; do
     expect "Depends lists $dep" relation_has Depends "$dep"
 done
+if relation_has Depends policykit-1; then
+    fail "Depends lists policykit-1 (transitional on bookworm; lintian depends-on-obsolete-package)"
+fi
 for rec in libgtk-3-bin desktop-file-utils gnome-shell-extension-appindicator ibus wl-clipboard; do
     expect "Recommends lists $rec" relation_has Recommends "$rec"
 done
@@ -478,6 +534,7 @@ for f in \
     /usr/share/doc/gswitch-auto/hunspell-ru-LICENSE \
     /usr/share/doc/gswitch-auto/THIRD-PARTY-NOTICES.md \
     /usr/share/doc/gswitch-auto/clipboard-LICENSE \
+    /usr/share/doc/gswitch-auto/GO-LICENSES.txt \
     /usr/share/doc/gswitch-auto/README.md; do
     expect_entry "$f" -rw-r--r--
 done
@@ -491,8 +548,6 @@ expect_absent /usr/share/licenses
 expect "every entry is owned by root/root" \
     test -z "$(awk '$2 != "root/root"' <<<"$listing")"
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
 dpkg-deb -e "$deb_file" "$tmp/control"
 dpkg-deb -x "$deb_file" "$tmp/root"
 
@@ -513,17 +568,24 @@ expect "prerm is upstream scripts/preremove.sh" cmp -s "$tmp/control/prerm" scri
 expect "postrm is upstream scripts/postremove.sh" cmp -s "$tmp/control/postrm" scripts/postremove.sh
 
 # The packaged user unit must be byte-identical to upstream's (SPEC D2).
+# The reference comes from the upstream tag (or --upstream-unit, which
+# container mode always passes); there is no fallback to configs/ itself,
+# which would compare the packaged file with its own source.
 base=$(GSWITCH_VERSION=$version scripts/version.sh --base)
-if git rev-parse -q --verify "refs/tags/v$base" >/dev/null 2>&1 &&
+if [[ -n $upstream_unit ]]; then
+    cp -- "$upstream_unit" "$tmp/upstream.service"
+    reference="upstream unit $upstream_unit (v$base)"
+elif git rev-parse -q --verify "refs/tags/v$base" >/dev/null 2>&1 &&
     git show "v$base:configs/gswitch.service" >"$tmp/upstream.service" 2>/dev/null; then
     reference="configs/gswitch.service of upstream tag v$base"
 else
-    printf 'note  tag v%s not available; comparing the unit with configs/gswitch.service\n' "$base"
-    cp configs/gswitch.service "$tmp/upstream.service"
-    reference="configs/gswitch.service"
+    reference=""
+    fail "upstream tag v$base is not available, so the packaged user unit cannot be compared with upstream's (fetch the upstream tags or pass --upstream-unit FILE)"
 fi
-expect "packaged user unit is byte-identical to $reference" \
-    cmp -s "$tmp/root/usr/lib/systemd/user/gswitch.service" "$tmp/upstream.service"
+if [[ -n $reference ]]; then
+    expect "packaged user unit is byte-identical to $reference" \
+        cmp -s "$tmp/root/usr/lib/systemd/user/gswitch.service" "$tmp/upstream.service"
+fi
 expect "packaged default.conf is configs/default.conf" \
     cmp -s "$tmp/root/etc/gswitch/default.conf" configs/default.conf
 
@@ -558,9 +620,13 @@ else
 fi
 
 if ((failures > 0)); then
-    die "$failures package assertion(s) failed for $deb_file"
+    rm -f "$deb_file"
+    die "$failures package assertion(s) failed for $deb_name; the package was discarded and nothing was written to $out"
 fi
 
 step "Done"
-printf '%s\n' "$deb_file"
+mv -f -- "$deb_file" "$out/$deb_name"
+deb_file="$out/$deb_name"
+(cd "$out" && sha256sum "$deb_name" >checksums-deb.txt)
+printf 'wrote %s and %s/checksums-deb.txt\n' "$deb_file" "$out"
 cat "$out/checksums-deb.txt"

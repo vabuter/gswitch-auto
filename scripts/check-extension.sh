@@ -13,7 +13,8 @@
 #   - the ESM extension.js contains `export default class` and no `imports.`;
 #     the legacy extension.js contains `function init(` and no line starting
 #     with `import ` or `export `
-#   - the shared helpers hintMask, securePurpose and purposeTable, the
+#   - the shared helpers hintMask, securePurpose, purposeTable and
+#     clutterFallbackPurpose, the
 #     IFACE_XML template literal and the purpose/hint tables are byte-identical
 #     in both trees
 #   - nfpm.yaml installs the ESM files with `packager: rpm` and the legacy
@@ -22,7 +23,9 @@
 #     it as a tree. While nfpm.yaml has no legacy entries yet, the packager
 #     checks are skipped with a notice (not a failure, also under --strict).
 #   - `node --check` of every ESM .js file as .mjs and of every legacy .js
-#     file as .cjs (CommonJS rejects import/export statements)
+#     file as .cjs (CommonJS rejects import/export statements), then
+#     scripts/extension-sim.cjs: the purpose reporting of both trees driven
+#     through stubbed Shell signals
 #
 # Usage: scripts/check-extension.sh [--strict]
 #   --strict   fail instead of skipping the JavaScript check when node is absent
@@ -243,6 +246,7 @@ items = [
     ("function", "hintMask"),
     ("function", "securePurpose"),
     ("function", "purposeTable"),
+    ("function", "clutterFallbackPurpose"),
     ("const", "IFACE_XML"),
     ("const", "IBUS_PURPOSE_NAMES"),
     ("const", "CLUTTER_PURPOSE_NAMES"),
@@ -400,6 +404,21 @@ if command -v node >/dev/null 2>&1; then
     }
     node_check "$esm_dir" mjs
     node_check "$legacy_dir" cjs
+    # Behaviour of the purpose reporting in both trees, with stubbed Shell
+    # modules (scripts/extension-sim.cjs).
+    if [[ -f $esm_js && -f $legacy_js ]]; then
+        sim_report=$(node "$repo_root/scripts/extension-sim.cjs" "$esm_js" "$legacy_js" 2>&1) || true
+        if [[ -z $sim_report ]]; then
+            fail "scripts/extension-sim.cjs produced no result"
+        else
+            while IFS=$'\t' read -r status msg; do
+                case "$status" in
+                    ok) ok "simulation: $msg" ;;
+                    *) fail "simulation: $status${msg:+ $msg}" ;;
+                esac
+            done <<<"$sim_report"
+        fi
+    fi
 elif [[ $strict == true ]]; then
     fail "node not found (required with --strict)"
 else

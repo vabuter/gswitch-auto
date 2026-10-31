@@ -62,6 +62,19 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # The gated tests against a real X server (SPEC-X11 §6.2): the raw XKB
+      # requests of the layout source, the group-lock round trip (only ever
+      # on this private Xvfb, never on a live session) and the EWMH focus
+      # read. Plain `go test` runs only the fake-connection unit tests.
+      # -noreset: by default Xvfb regenerates when its last client
+      # disconnects, which drops the keymap setxkbmap loaded (one group
+      # left) and resets connections dialled meanwhile.
+      - name: X11 integration tests (Xvfb)
+        run: |
+          xvfb-run -a -s '-screen 0 1024x768x24 -noreset' sh -c 'setxkbmap -layout us,ru -option grp:alt_shift_toggle &&
+            GSWITCH_X11_TEST=1 GSWITCH_X11_TEST_SWITCH=1 go test -count=1 -v -run X11 \
+              ./internal/gswitch/layoutstate/ ./internal/gswitch/focus/'
+
       - name: Test Awesome tray
         run: |
           mkdir -p builds

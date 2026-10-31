@@ -9,7 +9,7 @@
 // ../../gswitch-focus@vabuter.github.io/extension.js
 // (scripts/check-extension.sh compares the shared helpers).
 
-const {Clutter, Gio, GLib, IBus, Shell} = imports.gi;
+const {Clutter, Gio, GLib, IBus, Meta, Shell} = imports.gi;
 const Main = imports.ui.main;
 const IBusManager = imports.misc.ibusManager;
 
@@ -131,6 +131,26 @@ function purposeTable(enumObject, names) {
     return table;
 }
 
+/**
+ * The purpose reported from the Clutter input method while IBus has not
+ * reported anything (no ibus-daemon). On X11 the Clutter input method serves
+ * only GNOME Shell's own entries (overview search, run dialog) and is never
+ * told when the focus moves on to an X11 client, so its purpose counts only
+ * while one of those entries has the input focus; otherwise the field is
+ * unknown, which strict mode denies (a 'normal' left by the overview search
+ * must not carry over into a GTK password entry).
+ *
+ * @param {boolean} wayland - Meta.is_wayland_compositor()
+ * @param {boolean} shellEntryFocused - Main.inputMethod.currentFocus is set
+ * @param {string} clutterPurpose - the Clutter input method's purpose
+ * @returns {string} - the purpose to report
+ */
+function clutterFallbackPurpose(wayland, shellEntryFocused, clutterPurpose) {
+    if (!wayland && !shellEntryFocused)
+        return 'unknown';
+    return clutterPurpose;
+}
+
 class FocusReporter {
     constructor() {
         this._ibusPurposes = purposeTable(IBus.InputPurpose, IBUS_PURPOSE_NAMES);
@@ -143,6 +163,9 @@ class FocusReporter {
         // IBus delivered purpose information at least once; until then the
         // Clutter input method is the fallback source.
         this._ibusSeen = false;
+        // On X11 the Clutter input method serves GNOME Shell's own entries
+        // only (clutterFallbackPurpose).
+        this._wayland = Meta.is_wayland_compositor();
 
         [this._appId, this._wmClass] = this._readFocus();
         this._purpose = this._initialPurpose();
@@ -157,7 +180,12 @@ class FocusReporter {
         // emitter (misc/signalTracker.js exports only the standalone
         // functions there).
         this._focusWindowId = global.display.connect(
-            'notify::focus-window', () => this._updateFocus(true));
+            'notify::focus-window', () => {
+                this._updateFocus(true);
+                this._onFocusMoved();
+            });
+        this._stageFocusId = global.stage.connect(
+            'notify::key-focus', () => this._onFocusMoved());
         this._focusAppId = Shell.WindowTracker.get_default().connect(
             'notify::focus-app', () => this._updateFocus(false));
         const ibusManager = IBusManager.getIBusManager();
@@ -196,6 +224,10 @@ class FocusReporter {
         if (this._focusAppId) {
             Shell.WindowTracker.get_default().disconnect(this._focusAppId);
             this._focusAppId = 0;
+        }
+        if (this._stageFocusId) {
+            global.stage.disconnect(this._stageFocusId);
+            this._stageFocusId = 0;
         }
         const ibusManager = IBusManager.getIBusManager();
         for (const id of this._ibusIds)
@@ -343,7 +375,23 @@ class FocusReporter {
         // Fallback when IBus is absent: used only until IBus reports anything.
         if (this._ibusSeen)
             return;
-        this._setPurpose(this._clutterPurpose());
+        this._setPurpose(this._fallbackPurpose());
+    }
+
+    _onFocusMoved() {
+        // X11 only: the Clutter input method is not told when the focus
+        // leaves GNOME Shell's entries for an X11 window (a new focus window,
+        // or the shell's key focus leaving an entry, e.g. the overview
+        // closing), so re-derive the fallback purpose then.
+        if (this._ibusSeen || this._wayland)
+            return;
+        this._setPurpose(this._fallbackPurpose());
+    }
+
+    _fallbackPurpose() {
+        const im = Main.inputMethod;
+        return clutterFallbackPurpose(this._wayland, Boolean(im?.currentFocus),
+            im ? this._clutterPurpose() : 'unknown');
     }
 
     _setPurpose(purpose) {

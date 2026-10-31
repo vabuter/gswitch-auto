@@ -67,7 +67,11 @@ var errForkNoInputReader = errors.New("no input reader")
 // disables every fork feature.
 type forkState struct {
 	layoutSpecs []LayoutSpec // resolved pair (set in initLayoutConverter)
-	controlChan chan func()  // cap forkControlQueue; nil before initFork
+	// autoShiftLaunch7: the fork's <Shift>XF86Launch7 GNOME binding is in
+	// place, so the automatic path switches with Shift+F16 (auto_switch.go).
+	autoShiftLaunch7 bool
+
+	controlChan chan func() // cap forkControlQueue; nil before initFork
 	forkWG      sync.WaitGroup
 	forkCancel  context.CancelFunc // cancels the fork goroutines started by startFork
 
@@ -129,6 +133,7 @@ func (s *Switcher) initFork() {
 	s.applyChords(nil, cfg.Settings)
 	s.initDetector(cfg)
 	s.initTracker(cfg.Settings)
+	s.initAutoSwitchBinding()
 	if s.tracker != nil {
 		// Only with a tracker: without one the manual path keeps the
 		// upstream gsettings reader and never touches tracker state.

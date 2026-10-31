@@ -182,17 +182,21 @@ func (s *Switcher) restoreLayoutIfChordFlipped() {
 	if s.config != nil {
 		delay = time.Duration(s.config.Delay) * time.Millisecond
 	}
+	plan := s.autoSwitchPlan()
 	err := triggerAndConfirmGNOMEWaylandLayoutSwitch(
 		trackerLayoutStateReader{tracker: s.tracker},
-		s.converter.LSKeys,
+		plan.keys,
 		func(event KeyEvent) error {
 			return s.vKeyboard.EmitKey(event.Code, event.Value)
 		},
-		gnomeWaylandLayoutSwitchAttempts,
-		gnomeWaylandLayoutGroupPollAttempts,
+		plan.attempts,
+		plan.polls,
 		delay,
 		emitSleep,
 	)
+	if plan.noMods {
+		s.discardSwallowedInput()
+	}
 	if err != nil {
 		s.logError("selection chord: layout restore failed: %v", err)
 		return

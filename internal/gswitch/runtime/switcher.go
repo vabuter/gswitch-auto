@@ -891,6 +891,10 @@ type emitOptions struct {
 	// reader) regardless of s.verifyGNOMEWaylandLayoutSwitch / s.verifyGNOMEX11LayoutSwitch.
 	// Requires reader != nil. The auto path always sets it; the manual path never does.
 	confirm bool
+	// plan is how the confirmed switch is triggered (auto_switch.go); the zero
+	// value is upstream's GNOME Wayland confirmation of LSKeys. The auto path
+	// passes s.autoSwitchPlan().
+	plan switchPlan
 }
 
 var errConfirmReaderMissing = errors.New("switch confirmation requested without a reader")
@@ -933,17 +937,30 @@ func (s *Switcher) emitConversionEvents(events []KeyEvent, opts emitOptions) err
 		if reader == nil {
 			reader = s.layoutReader()
 		}
+		plan := opts.plan
+		if plan.keys == nil {
+			plan = switchPlan{
+				keys:     s.converter.LSKeys,
+				attempts: gnomeWaylandLayoutSwitchAttempts,
+				polls:    gnomeWaylandLayoutGroupPollAttempts,
+			}
+		}
 		switchErr := triggerAndConfirmGNOMEWaylandLayoutSwitch(
 			reader,
-			s.converter.LSKeys,
+			plan.keys,
 			func(event KeyEvent) error {
 				return s.vKeyboard.EmitKey(event.Code, event.Value)
 			},
-			gnomeWaylandLayoutSwitchAttempts,
-			gnomeWaylandLayoutGroupPollAttempts,
+			plan.attempts,
+			plan.polls,
 			opts.delay,
 			emitSleep,
 		)
+		if plan.noMods {
+			// GNOME's modifier-less popup swallowed what was typed while it
+			// held the grab (until the switch, or until it was cancelled).
+			s.discardSwallowedInput()
+		}
 		if switchErr != nil {
 			return fmt.Errorf("GNOME Wayland layout switch confirmation: %w", switchErr)
 		}

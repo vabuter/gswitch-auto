@@ -25,6 +25,20 @@ the `ready(false)` handler in **both** extension trees (§3.6); WPX6 `scripts/de
 accepts `config-files` (§3.8.2); WPX7 `runtime/platform.go` refusal of `layout-source=ibus`
 in X11 sessions below 49.3 plus its matrix row (§2.1), and the README/FORK.md wording (§3.10).
 
+Revision 4 (2026-10-31, review fixes after the WPX merges): the automatic switch on GNOME X11
+(F21, §2.1 note, K-X1, MX6): upstream's `XF86Launch7` has no modifier, so GNOME's input-source
+popup applies it only 1.5 s after the last key release and swallows typing meanwhile; the
+auto path now switches with a fork-owned `<Shift>XF86Launch7` binding and, for any other
+modifier-less binding, presses once and waits past the popup timeout. Strict mode does not
+protect XIM or Qt clients on X11 (F22, K-X4, K-X5, §2.2, MX5, MX7, the tooltip of §3.5, the
+template of §3.9). The extension's Clutter fallback purpose counts on X11 only while a Shell
+entry has the input focus (§3.6). X11 source: the group table is re-read when the group
+changes, a Resync fallback is followed by a forced report, connects and replies of both X11
+sources are bounded and leave nothing behind, a nonexistent screen number is an error
+(§3.1.2, §3.2.1, K-X16). Packaging: `polkitd` + `pkexec` instead of `policykit-1` (F17), the
+.deb leaves the build only after its checks, the release is published only with both packages
+(§3.8.5); CI runs the gated X11 tests under Xvfb (§6.2).
+
 This addendum makes the same program (same repository, same Go module, same binaries) work on
 the user's second machine. It changes nothing in SPEC.md's fixed decisions D1–D8 and corrections
 C1–C29; where this document and SPEC.md differ for the **X11 target**, this document wins; for
@@ -82,10 +96,12 @@ observed on the Fedora host during this round.
 | F14 | Replacement order (Conflicts+Replaces+Provides) depends on the front end. `dpkg -i gswitch-auto_….deb` over upstream: the upstream package's `prerm remove in-favour gswitch-auto <ver>` runs **before** our `preinst install`, and `dpkg-query` then reports upstream as `half-configured`/`half-installed`. `apt install ./gswitch-auto_….deb` (the documented command, MX1): apt removes `gswitch` in a separate dpkg run first (`Removing gswitch` is logged before `Unpacking gswitch-auto`), upstream's prerm gets a plain `remove`, and our `preinst install` sees upstream as **`config-files`**. Either way upstream `preremove.sh` has disabled and stopped the user unit (`scripts/preremove.sh:17-40`). There is no `%pretrans` equivalent on deb. | R; apt path V (review, throwaway `debian:12` container, `--network=none`, dummy packages with the same relations and a conffile) |
 | F15 | Debian 12 ships Go 1.19 (backports 1.23); `go.mod` needs `go 1.25.5` ⇒ build in `docker.io/library/golang:1.26-bookworm` (image present locally; `podman` 5.8.9; `debian:12` image present). Binaries built on Fedora need `GLIBC_2.34` at most (ok on glibc 2.36) but official builds go through the container. | R, H (`podman images`) |
 | F16 | Host (Fedora 44, GNOME 50.6, Wayland): Xwayland on `DISPLAY=:0` with `_XKB_RULES_NAMES = "evdev","pc105","us","",""` and a live `_NET_ACTIVE_WINDOW`; `setxkbmap -query` warns "Running setxkbmap against an Xwayland server". ⇒ read-only X11 smoke tests run here, but group **changes** cannot be observed here (Xwayland sees one layout). | H |
-| F17 | Debian 12 packages: `libgtk-3-0`, `libx11-6`, `libglib2.0-bin` (gsettings), `policykit-1` (transitional: `polkitd` + `pkexec`), `x11-xkb-utils` (setxkbmap), `gnome-shell-extension-appindicator`, `wl-clipboard`, `desktop-file-utils`, `libgtk-3-bin` (gtk-update-icon-cache). | R (assessment) |
+| F17 | Debian 12 packages: `libgtk-3-0`, `libx11-6`, `libglib2.0-bin` (gsettings), `polkitd` + `pkexec` (not the transitional `policykit-1`: bookworm's lintian reports `depends-on-obsolete-package`, an error), `x11-xkb-utils` (setxkbmap), `gnome-shell-extension-appindicator`, `wl-clipboard`, `desktop-file-utils`, `libgtk-3-bin` (gtk-update-icon-cache). | R (assessment) |
 | F18 | GNOME Shell 43.9 `js/misc/keyboardManager.js` `_buildGroupStrings(_group)` sets the keymap from `_group.concat(this._localeLayoutInfo)` (lines 144-148): the layout of the UI locale is appended to every group (for mnemonics such as Alt+Ф), and `apply` only ever locks indices inside the user's sources (`setUserLayouts`, ≤ 3 per group). ⇒ On the Debian machine `_XKB_RULES_NAMES` most likely reads layouts `us,ru,us` (en_US) or `us,ru,ru` (ru_RU) with variants `,,`; groups 0 and 1 follow `sources`, the third group is never locked. Exact value to be recorded in MX3. | V (raw 43.9) |
 | F19 | GNOME Shell `js/misc/ibusManager.js` `_clear()` (43.9 lines 142-164, 50.6 lines 137-159), run when the IBus connection is lost or `ibus restart`/ibus-setup replaces the daemon, emits only `'ready'(false)` — no `'focus-out'`; `_updateReadiness` emits `'ready'(bool)` too. | V (raw 43.9, 50.6) |
 | F20 | The auto engine's decision lines (`auto: arm|fire|skip reason=<reason> keys=<n>`, `auto.go:728-749`; a focus denial is `reason=focus:<policy reason>`, `auto.go:297-299`) go through `logDebug` (`auto_control.go:118`), which prints only with `--debug` (`switcher.go:381-386`); the service (`ExecStart=/usr/bin/gswitch --run`) writes only `s.log` lines (the start summary, warnings) to the journal. Upstream's `Auto-detected layout switch keys: <names> ([186]) from gnome` is debug-only as well (`switcher.go:183-186`), and the X11 confirmation branch logs nothing on success (`switcher.go:953-974`; only the error `GNOME X11 layout switch confirmation: …`). | V (tree) |
+| F21 | GNOME Shell 43.9 `keyboard.js` `_switchInputSource` shows an `InputSourcePopup`; `switcherPopup.js` `show()` finishes at once when the binding's primary modifier is already released and otherwise on its release (`vfunc_key_release_event`), but for a binding **without** a modifier (mask 0, e.g. upstream's `XF86Launch7`) it calls `_resetNoModsTimeout()` (`NO_MODS_TIMEOUT` = 1500 ms) and every key release restarts it; while open, its modal grab swallows every key, Space/Return apply the selection at once, Escape/Tab cancel, and a second press of the binding moves the selection back to the current source. | V (raw 43.9 `switcherPopup.js`, `keyboard.js`) |
+| F22 | ibus 1.5.27: `bus_panel_proxy_focus_in` pushes the context's stored content type to the panel on every `FocusIn` — `(FREE_FORM, 0)` when the client never set one. ibus-x11 (XIM; GNOME 43 starts `ibus-daemon --xim` on X11) never calls `set_content_type`; Qt 5.15/6.4's IBus plugin returns early from `setFocusObject` for a password `QLineEdit` (no `FocusOut`, no `SetContentType`). ⇒ XIM clients (xterm, urxvt, Emacs, Java, Wine) and Qt password fields are reported as `normal`. | V (raw ibus 1.5.27, qtbase 5.15/6.4) |
 
 ---
 
@@ -159,11 +175,25 @@ Notes:
 - `layout-source=x11` on Wayland is accepted by the parser but refused at selection with warning
   `layout-source=x11 needs an X11 session` ⇒ `layout-source-unsupported` (Xwayland never sees
   GNOME's group changes, F16).
-- The auto path keeps C26: `autoEmit` (`runtime/auto_control.go:141-159`) confirms through
-  `trackerLayoutStateReader` on every platform. On X11 the tracker lags the group change by at
-  most one poll (≤ 50 ms) and the confirm loop polls the tracker every 50 ms × 20
-  (`gnome_wayland_layout_switch.go:10-14`), so a confirmed switch costs ≤ ~100 ms more than
-  upstream's 10 ms X11 loop. Acceptable (K-X1).
+- The auto path keeps C26: `autoEmit` (`runtime/auto_control.go`) confirms through
+  `trackerLayoutStateReader` on every platform. How it triggers the switch is the binding's
+  `switchPlan` (`runtime/auto_switch.go`, rev. 4, F21): upstream's GNOME X11 accelerator
+  `XF86Launch7` has no modifier, so GNOME's popup would apply it only 1.5 s after the key
+  release, swallow the user's typing meanwhile, and a second press (the Wayland confirm's
+  attempt 2 after 1 s) would move the selection back — every automatic fix and undo failed.
+  Therefore, when the layout switch is upstream's `XF86Launch7` (`verifyGNOMEX11LayoutSwitch`,
+  LSKeys `[186]`) and a tracker exists, `initFork` adds the fork-owned accelerator
+  `<Shift>XF86Launch7` to `switch-input-source` (`detect.EnsureGNOMEX11ShiftLaunch7Binding`,
+  persistent like upstream's `XF86Launch7`, verified, rolled back on failure), and the auto
+  path and the chord-flip restore emit Shift+F16: the popup finishes on the Shift release
+  within milliseconds; confirmation 2 × 20 × 50 ms as on Wayland. Any other modifier-less
+  GNOME binding (a single key; or the Shift binding could not be added) gets one press and one
+  2.5 s window (`NO_MODS_TIMEOUT` + 1 s), never a second press, and the input queued until the
+  confirmation ends is discarded (`discardSwallowedInput`: drain + `afterInputDiscarded`),
+  because GNOME swallowed it. Bindings with a modifier (Fedora's `<Alt>Shift_L`) are
+  unchanged. On X11 the tracker lags the group change by at most one poll (≤ 50 ms) (K-X1).
+  The manual path is upstream's and unchanged (its 200 × 10 ms per attempt outlasts the
+  popup).
 - `noteOwnSwitch` after a tracker-confirmed auto switch sees the new generation (unchanged
   semantics). After a **manual** conversion on X11 (upstream reader, not the tracker) the
   tracker's poll may bump the generation after `noteOwnSwitch` ran ⇒ classified external ⇒
@@ -186,7 +216,7 @@ once at start.
 | Wayland GNOME | `auto` | no | `false` | ext (absent) | `absent` | fail-open unless `auto-require-focus` (unchanged) |
 | Wayland GNOME | `auto` | yes | `true` (explicit) | ext | `active` | fires only with a known text purpose (§3.2.4); `none`/`unknown` ⇒ `purpose-unknown` |
 | Wayland GNOME | `auto` | no | `true` | ext | `absent` | `AutoAvailable=false`, `focus-extension-required`; engine denies `focus-unavailable` |
-| X11 GNOME (Debian 12) | `auto` | yes | `true` (default) | ext + x11 | `active` | app identity and purpose from ext; fires only with a known text purpose; x11 identity is a fallback while ext is absent |
+| X11 GNOME (Debian 12) | `auto` | yes | `true` (default) | ext + x11 | `active` | app identity and purpose from ext; fires only with a known text purpose; x11 identity is a fallback while ext is absent. XIM clients and Qt password fields report `normal` (F22): only the exclusion list protects them (K-X4) |
 | X11 GNOME | `auto` | no (not enabled / relogin pending / disabled) | `true` | ext (absent) + x11 | `x11` | `AutoAvailable=false`, reason `focus-extension-required`; tray hint; the policy reason is `focus-unavailable` (§3.2.4 returns it before the excluded-app check — exclusions are **not** evaluated); `--focus-state` and the IPC status still print the x11 identity (`FocusedApp`/`FocusedWmClass`) |
 | X11 GNOME | `auto` | no | `false` (explicit) | ext (absent) + x11 | `x11` | fail-open; exclusions by `WM_CLASS`/`_GTK_APPLICATION_ID`; password/terminal purposes unknown ⇒ only the exclusion list protects (documented, §7 K-X5) |
 | X11 non-GNOME | `auto` | n/a | `true` (default) | x11 | `x11` | with `layout-source=auto` there is no tracker, so `layout-source-unsupported` wins (§2.3 precedence); with `layout-source=x11` ⇒ `focus-extension-required` (no purpose source); auto there needs both `layout-source=x11` and `auto-strict-purpose=false` |
@@ -333,15 +363,24 @@ Decision (X3): **poll `XkbGetState` on a dedicated xgb connection every 50 ms**;
    most `x11CloseTimeout` (1 s); and the dial — `xgb.NewConnDisplay`, i.e. connect plus the
    setup handshake, itself unbounded — runs in a goroutine bounded by ctx and
    `x11ConnectTimeout` (2 s) (`dialX11`), for `Run` **and** for the temporary connection of
-   `Query` alike (`Query` dials through the same `connect`). With a hung server the abandoned
-   goroutines and the socket leak until the server closes the connection. Accepted: the leak
-   is bounded by the reconnect backoff (at most one connection per attempt, attempts ≥ 200 ms
-   apart and 5 s apart at steady state), a hung X server means a dead session anyway, and
-   safety does not depend on it (the timeout already reported `Available(false)`). The
-   alternative — dialling the `net.Conn` ourselves and wrapping it with
-   `xgb.NewConnNetWithCookieHex` so the socket can be closed directly — needs our own
-   `DISPLAY` parsing and Xauthority lookup (`NewConnNet` reads the authority for an empty
-   host/display); deferred (Q-X7).
+   `Query` alike (`Query` dials through the same `connect`). Rev. 4 (Q-X7 resolved): the
+   abandoned dial goroutine and socket leaked once per reconnect attempt against a server
+   that accepts but never answers, so both X11 sources now dial through the fork package
+   `internal/gswitch/x11conn`: it parses `DISPLAY` and looks the MIT-MAGIC-COOKIE-1 up
+   exactly like xgb, dials the socket with `net.Dialer.DialContext`, hands it to
+   `xgb.NewConnNetWithCookieHex` (`NewConnNet` without an entry) and moves the socket
+   deadline into the past when ctx ends, so the setup runs on the caller's goroutine and
+   leaves nothing behind. Its `Close` waits at most `x11conn.CloseTimeout` (500 ms) for xgb's
+   graceful shutdown and then closes the socket itself, which ends xgb's goroutines and every
+   abandoned reply. `DefaultRoot` rejects a screen number the server does not have
+   (`DISPLAY=:0.1` used to panic in `xproto.SetupInfo.DefaultScreen`). Rev. 4 also re-reads
+   `_XKB_RULES_NAMES` whenever the group differs from the previous poll or the poll drained
+   queued events (a keymap upload sends `MappingNotify`; mutter writes the property before
+   it locks the group), so a reordered source list is never named through the stale table;
+   the periodic re-read stays as a backstop. `Query`'s wait for the poll's request mutex is
+   bounded by its ctx, and after a `Resync` whose sources all failed (fallback `Settings` or
+   `Unknown`) the tracker calls `RequestReport`, so the next identical poll reports its
+   engine again instead of leaving the fallback in place until the next real switch.
 6. The source selects no events and sends only checked requests, so its xgb event queue should
    stay empty; but xgb puts every event and every unchecked error into a 5000-slot channel and
    its reader goroutine blocks when that is full, which would stall replies until
@@ -368,8 +407,8 @@ type X11Options struct {
 // X11Source implements Source. Run: connect (xgb.NewConnDisplay), QueryExtension("XKEYBOARD"),
 // XkbUseExtension(1.0), read _XKB_RULES_NAMES (root, STRING) ⇒ group table, XkbGetState ⇒
 // sink.Available(SourceX11, true) + sink.Engine(SourceX11, EngineForGroup(table, group));
-// then every PollInterval: XkbGetState (+ re-read _XKB_RULES_NAMES every 40th poll ≈ 2 s and
-// whenever group >= len(table)). Engine is reported ONLY on connect and when the derived
+// then every PollInterval: XkbGetState (+ re-read _XKB_RULES_NAMES every 40th poll ≈ 2 s,
+// whenever group >= len(table), the group changed or queued events were drained; rev. 4). Engine is reported ONLY on connect and when the derived
 // engine name changes (group or table changed); the source keeps the last reported name and
 // identical polls are silent. Reason: Tracker.Engine (tracker.go:267-278) calls
 // cancelHintLocked unconditionally before setLocked and engineState always yields Confirmed,
@@ -765,8 +804,10 @@ and `GetExtensionInfo` behave the same (F5), so `FocusExtNeedsRelogin` text appl
 
 `internal/tray/strings_ga.go` + `internal/i18n/locales/{en,ru}.json` (en text; ru by WPX5):
 `strGACheckStrictPurpose` "Correct only in fields that report their type (recommended on X11)",
-`strGAHintStrictPurpose` "Needs the focus extension. Fields that do not report a type (for
-example xterm, or password fields on X11) are never corrected.", `strGAReasonLayoutSourceUnsupported`
+`strGAHintStrictPurpose` "Needs the focus extension. Corrects only fields that report a text
+type; fields that report none are skipped. On X11, XIM clients (xterm, Emacs, Java, Wine) and Qt
+applications report password fields as ordinary text: only the excluded applications list
+protects them." (rev. 4, F22), `strGAReasonLayoutSourceUnsupported`
 "no layout source for this session (GNOME Shell below 49.3 on Wayland, or no X11 display)",
 `strGAReasonFocusSourceOff` "strict mode is on but focus-source=off",
 `strGAReasonFocusExtensionRequired` "strict mode needs the focus extension (enable it below or
@@ -818,6 +859,17 @@ stored with the other IBusManager ids and disconnected in `destroy()`): on `read
 (`purpose-unknown`) and changes nothing in non-strict mode (only password/pin/terminal are
 denied there). The helper-equality check of `check-extension.sh` is unaffected (the handler
 lives in the class); `metadata_test.go` asserts that both files contain `'ready'`.
+
+Clutter fallback on X11 (rev. 4, **both trees**): until IBus reports anything (no
+ibus-daemon), the purpose comes from `Main.inputMethod`. On X11 that input method serves only
+GNOME Shell's own entries and is never told when the focus moves on to an X11 client, so a
+`normal` left by the overview search would last into a GTK password entry. The shared helper
+`clutterFallbackPurpose(wayland, shellEntryFocused, clutterPurpose)` returns `unknown` on X11
+while `Main.inputMethod.currentFocus` is unset; the reporter re-derives the fallback on
+`notify::focus-window` and on `global.stage` `notify::key-focus` (X11 only, while IBus was not
+seen). Wayland is unchanged. `scripts/extension-sim.cjs` drives both trees through these
+signals with stubbed Shell modules (run by `check-extension.sh` when node is present, and so
+by `TestCheckExtensionScript`).
 
 `scripts/check-extension.sh` (rewritten by WPX4, same CLI): expects exactly the two trees
 above; per tree: metadata parses, `uuid == dir name == focus.ExtensionUUID`, `shell-version`
@@ -874,7 +926,7 @@ Deb: `gswitch-auto_<V>-<R>_amd64.deb`, `Version: <V>-<R>` (`0.8.0+auto.1-1`; dpk
 ```yaml
 overrides:
   deb:
-    depends: ["libc6 (>= 2.34)", systemd, libgtk-3-0, libx11-6, libglib2.0-bin, policykit-1, x11-xkb-utils]
+    depends: ["libc6 (>= 2.34)", systemd, libgtk-3-0, libx11-6, libglib2.0-bin, polkitd, pkexec, x11-xkb-utils]
     # libc6: nfpm adds no shlib dependencies; without it lintian reports
     # missing-dependency-on-libc (error). 2.34 = the highest GLIBC_ version the
     # Go/CGO binaries reference (F15); bookworm has 2.36.
@@ -1030,11 +1082,14 @@ gswitch-auto`, `dpkg -L gswitch-auto` contains the legacy extension files and `c
 gswitch-auto` removes `/usr/bin/gswitch`. The `preinst` marker logic runs with no logged-in
 users there (loop is empty) — that is fine; the scriptlet tolerance test (`env -i`) covers
 syntax; the re-enable on the apt path (F14, §3.8.2) is observable only with a logged-in user
-(MX1). `release.yml` adds a `deb` job (same container) and uploads
-`gswitch-auto_<V>-1_amd64.deb` + `checksums-deb.txt` to the same release (`gh release upload`
-after the rpm job created it; `needs: release`). The `build-test` job's apt list
-(`ci.yml:40-48`: `xvfb`, `x11-utils`, `xdotool`, …) gains `x11-xkb-utils`, because the §6.2
-`xvfb-run` switch test calls `setxkbmap`.
+(MX1). `release.yml` adds a `deb` job (same container) that runs in parallel with the RPM
+job; both upload their package and checksum file as artifacts, and a `publish` job (`needs:
+[release, deb]`) creates the release once with all four assets and the Fedora and Debian
+install notes (rev. 4: the earlier `gh release create` in the rpm job followed by `gh release
+upload` left a public RPM-only release behind whenever the deb build or lintian failed). The
+`build-test` job's apt list (`ci.yml:40-48`: `xvfb`, `x11-utils`, `xdotool`, …) gains
+`x11-xkb-utils`, because the §6.2 `xvfb-run` switch test calls `setxkbmap`; its step
+"X11 integration tests (Xvfb)" runs that command (rev. 4).
 
 ### 3.9 Defaults: `templates/exceptions-apps.txt` (WPX7)
 
@@ -1059,6 +1114,23 @@ mate-terminal
 lxterminal
 urxvt
 st-256color
+# X11 input-method clients whose password fields look like ordinary text fields
+# (rev. 4, F22, K-X4): XIM clients and Qt applications
+rxvt
+aterm
+eterm
+mlterm
+kterm
+st
+emacs                     # GNU Emacs uses XIM on X11
+sun-awt-x11-*             # Java AWT/Swing windows
+*.exe                     # Wine applications
+pinentry-qt
+pinentry-qt5
+ksshaskpass
+org.kde.ksshaskpass
+kwalletmanager5
+kleopatra
 # Password managers
 keepassxc                 # WM_CLASS "keepassxc"/"KeePassXC"; app id org.keepassxc.KeePassXC
 bitwarden
@@ -1402,14 +1474,17 @@ podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/src" -w 
   -v gswitch-auto-gomod:/tmp/gomod -v gswitch-auto-gocache:/tmp/go-build \
   -e HOME=/tmp -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/go-build -e GOFLAGS=-buildvcs=false \
   localhost/gswitch-auto-deb:bookworm \
-  sh -c 'Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 & sleep 1; export DISPLAY=:99; \
+  sh -c 'Xvfb :99 -screen 0 1024x768x24 -noreset >/dev/null 2>&1 & sleep 1; export DISPLAY=:99; \
          setxkbmap -layout us,ru -option grp:alt_shift_toggle; \
          GSWITCH_X11_TEST=1 GSWITCH_X11_TEST_SWITCH=1 go test ./internal/gswitch/layoutstate/ ./internal/gswitch/focus/ -run X11 -v'
 ```
 
 (`Xvfb` and `x11-xkb-utils` are in the image, §3.8.3; the mount flags are those of §3.8.3 —
 never `:Z`.) CI's `build-test` job already installs `xvfb` (`ci.yml:48`) and gains
-`x11-xkb-utils` for `setxkbmap` (§3.8.5); it runs the same command with `xvfb-run -a`.
+`x11-xkb-utils` for `setxkbmap` (§3.8.5); it runs the same command with `xvfb-run -a -s
+'-screen 0 1024x768x24 -noreset'` (rev. 4: without `-noreset` Xvfb regenerates when its last
+client disconnects, so the keymap `setxkbmap` loaded is gone — one group, the lock step fails —
+and a connection dialled during the regeneration is reset).
 
 ### 6.3 Manual test script — Debian 12, GNOME on Xorg (user)
 
@@ -1484,7 +1559,9 @@ the foreground; gedit or gnome-text-editor as the test field; a terminal (gnome-
   prevents).
 - **MX5 Focus diagnostics.** `gswitch --focus-state --watch 15` while switching between
   gedit, gnome-terminal and xterm ⇒ merged lines show `app source: extension`, purposes
-  `normal` / `terminal` / `none`, policy `allowed` / `denied (terminal)` / `denied (purpose-unknown)`.
+  `normal` / `terminal` / `normal`, policy `allowed` / `denied (terminal)` / `denied
+  (excluded-app)` (rev. 4: xterm is an XIM client; IBus pushes `(FREE_FORM, 0)` on its
+  focus-in, F22, so only the exclusion list stops it).
   `busctl … FocusSource` ⇒ `"active"`.
 - **MX6 Auto-correction.** Toggle auto on (LShift+RShift; tray shows on). In gedit, layout us:
   `ghbdtn ` ⇒ `привет ` and the layout indicator shows ru; `руддщ ` (ru) ⇒ `hello `; `hello `
@@ -1499,15 +1576,24 @@ the foreground; gedit or gnome-text-editor as the test field; a terminal (gnome-
   us again. (A first letter typed within the ≤ 50 ms poll window after a switch may make the
   word skip as `layout-changed`: the safe direction.) Super+Space typed *inside* a word is
   not a K-X1 case: the daemon sees the Meta key, which taints the word (`taint.go:150-151`),
-  and its Space ends the word.
+  and its Space ends the word. (c) Switch latency and lost keys (rev. 4, F21): after the
+  daemon's first start `gsettings get org.gnome.desktop.wm.keybindings switch-input-source`
+  also lists `'<Shift>XF86Launch7'` (log: `Added <Shift>XF86Launch7 …`). With *(debug)*
+  running, type `ghbdtn `, and as soon as the fix appears type `rfr ltkf ` at normal speed ⇒
+  the screen shows `привет как дела ` with no letter missing, the input-source popup never
+  appears, and the time from the Space to the fixed text is the hold-off plus at most
+  ~100 ms (never ~1.5 s; `auto: arm` → `auto: fire` in the debug log). Double-Shift right
+  after a fix undoes it as fast. A fix that skips with `input-pending` because a key was
+  still down is the documented safe direction, not a failure.
 - **MX7 Strict mode.** In `xterm` type `ghbdtn ` ⇒ **no** correction; `busctl … FocusSuppressedReason`
-  (run inside xterm) ⇒ `"purpose-unknown"`. Settings → Auto correction: clear "Correct only in
-  fields that report their type", Apply ⇒ `grep auto-strict-purpose ~/.config/gswitch/auto.conf`
-  ⇒ `false`; xterm still gets **no** correction, now with reason `"excluded-app"`: the
-  exclusion template that the tray seeds (`userconfig.EnsureFiles`, §3.9) lists `xterm`, which
-  matches its `WM_CLASS` `XTerm`. To see the fail-open itself, remove `xterm` under Settings →
-  Auto correction → Excluded applications, Apply ⇒ `ghbdtn ` in xterm ⇒ `привет ` (purpose
-  `none` is allowed without strict mode); add `xterm` back, Apply. Re-check the strict box,
+  (run inside xterm) ⇒ `"excluded-app"` (rev. 4: xterm is an XIM client and reports `normal`,
+  F22, so strict mode alone would allow it; the exclusion template that the tray seeds,
+  `userconfig.EnsureFiles`, §3.9, lists `xterm`, which matches its `WM_CLASS` `XTerm`).
+  Remove `xterm` under Settings → Auto correction → Excluded applications, Apply ⇒ `ghbdtn ` in
+  xterm ⇒ `привет ` **even with strict mode on** (the documented K-X4 limit); add `xterm` back,
+  Apply. Settings → Auto correction: clear "Correct only in fields that report their type",
+  Apply ⇒ `grep auto-strict-purpose ~/.config/gswitch/auto.conf` ⇒ `false`; xterm still gets
+  no correction with reason `"excluded-app"`. Re-check the strict box,
   Apply ⇒ the file says `true` (not `auto`: the tray writes the explicit value once toggled);
   hand-edit back to `auto-strict-purpose=auto` ⇒ the daemon logs the reload and behaves as
   `true`.
@@ -1571,11 +1657,11 @@ Fedora host regression after the merge: SPEC §6.4 M3, M5, M6, M8b and M12 uncha
 
 | # | Risk | Mitigation |
 |---|---|---|
-| K-X1 | Polling latency (≤ 50 ms) makes the auto confirm ~50–100 ms slower than upstream's X11 loop and may classify a Super+Space switch late | Fire gates re-read the tracker (safe direction: a late change only skips a word); `PollInterval` tunable; events deferred (Q-X1); MX6 (a)/(b) exercise a mid-word switch the daemon cannot see and a switch before a word |
+| K-X1 | Polling latency (≤ 50 ms) may classify a Super+Space switch late. The automatic switch itself: upstream's modifier-less `XF86Launch7` would keep GNOME's popup open for 1.5 s, swallowing typing (F21) | Fire gates re-read the tracker (safe direction: a late change only skips a word); `PollInterval` tunable; events deferred (Q-X1); the auto path switches with the fork-owned `<Shift>XF86Launch7` (§2.1 note), other modifier-less bindings get one press, a 2.5 s window and discarded input (`TestAutoSwitchPlanPerPlatform` pins the timings); MX6 (a)/(b) exercise a mid-word switch the daemon cannot see and a switch before a word, MX6 (c) the switch latency and lost keys |
 | K-X2 | `_XKB_RULES_NAMES` order or content differs from the daemon's pair (explicit `layout1`/`layout2`, > 2 sources, GNOME's appended locale layout — `us,ru,us`/`us,ru,ru`, F18 —, non-GNOME WMs that do not set the property) | Mapping by name, not position; the third (locale) entry is never locked by GNOME and maps by name too; the pair-order warning compares the first two entries (§3.1.2); `Fallback` to the pair with a warning; `--layout-state` prints the table; MX3, MX12 |
 | K-X3 | `DISPLAY`/`XAUTHORITY`/`XDG_SESSION_TYPE` missing in the user service environment (non-GDM, custom `.xsession`): the §0 rule with a nil `SessionEnv` needs `XDG_SESSION_TYPE=x11` in the `systemd --user` environment and has no `DISPLAY` fallback | F10 (present on Debian 12 GDM/X11) + `setupX11Environment` for `DISPLAY`/`XAUTHORITY`; a missing `XDG_SESSION_TYPE` selects **no** X11 source (auto unavailable, `layout-source-unsupported`, logged) and strict mode (fail-closed, §3.3) — never fail-open; documented remedy `systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE`; the sources log the connect error and retry |
-| K-X4 | Strict mode false negatives: apps without an IBus input context (xterm, Java/SWT, Wine, some Electron builds) are never corrected | Documented; `auto-strict-purpose=false` switches to fail-open with X11 exclusions; tray tooltip explains |
-| K-X5 | Strict mode off on X11: password fields of GTK apps look like "no field" (F8) and are then corrected like any text; Qt purposes are best effort. Strict mode on: a purpose left over from the previous field when the IBus connection drops (no `focus-out`, F19) | Default strict on X11; exclusion template lists password managers; README warns. The extension resets the purpose to `unknown` on `ready(false)` (§3.6), which strict mode denies |
+| K-X4 | Strict mode is no protection for clients that never report a content type: IBus pushes `(FREE_FORM, 0)` on every focus-in (F22), so XIM clients (xterm, urxvt, st, Emacs, Java, Wine — GNOME 43 runs `ibus-daemon --xim`) and Qt applications (no focus-out for a password `QLineEdit`) are reported as `normal` and corrected, password prompts included, unless excluded. Apps that never focus IBus at all report `none` and are skipped (false negatives) | The default exclusion template lists XIM terminals, Emacs, Java (`sun-awt-x11-*`), Wine (`*.exe`) and Qt password prompts (§3.9, `TestAppsTemplateCoversUntrustedX11Clients`); README and the tray tooltip state that strict mode does not cover them; MX5/MX7 |
+| K-X5 | Strict mode off on X11: password fields of GTK apps look like "no field" (F8) and are then corrected like any text. Qt password fields are corrected in either mode (F22, K-X4). Strict mode on: a purpose left over from the previous field when the IBus connection drops (no `focus-out`, F19), or from a GNOME Shell entry when no ibus-daemon runs | Default strict on X11; exclusion template lists password managers and Qt password prompts; README warns. The extension resets the purpose to `unknown` on `ready(false)` and, without IBus, whenever the focus leaves the Shell's entries (§3.6), which strict mode denies |
 | K-X6 | Two extension trees drift | `check-extension.sh` helper/IFACE equality; FORK.md rebase checklist; shared tests on both files |
 | K-X7 | GNOME 43 loads extensions only at login; a user with the ESM tree installed from the RPM on a 43 machine (or vice versa) gets OUT_OF_DATE | Packages ship the matching tree only; tray shows `FocusExtOutOfDate`; `install-extension.sh --legacy` for dev |
 | K-X8 | dpkg replacement disables the user unit before our `preinst` (F14); under `apt install` upstream is already removed (`config-files`) when `preinst` runs | Marker in `preinst` (upstream status anything but unknown/`not-installed`, including `config-files`, rev. 3) + `enable --now` in `postinst` for logged-in users; documented heuristic "upstream is or was installed"; MX1 (CI has no logged-in users) |
@@ -1586,7 +1672,7 @@ Fedora host regression after the merge: SPEC §6.4 M3, M5, M6, M8b and M12 uncha
 | K-X12 | The IBus guard waits on gnome-shell at login; a non-GNOME Wayland session with `layout-source=auto` has no source | Guard with backoff; clear reason `layout-source-unsupported`; `layout-source=ibus` override |
 | K-X13 | `_NET_ACTIVE_WINDOW` lags or points at a transient (menus, override-redirect never set it) | Only app identity is derived; a stale identity can only deny (excluded app) or allow a non-excluded app, same as the extension's `window:N` ids |
 | K-X14 | Two sources would double-report (future X11 GNOME ≥ 49.3) | Selection never adds `ibus` on X11 with `auto` (§2.1) |
-| K-X15 | `policykit-1` is transitional on bookworm; future Debian may drop it | Depends line reviewed per release; `pkexec` is what the tray needs |
+| K-X15 | `policykit-1` is transitional on bookworm (lintian: `depends-on-obsolete-package`, an error) | Depends on `polkitd` and `pkexec` directly; `build-deb.sh` asserts both and rejects `policykit-1`; reviewed per release |
 
 Open questions (deferred, default chosen):
 
@@ -1598,4 +1684,4 @@ Open questions (deferred, default chosen):
 | Q-X4 | `layout-source=x11` on Wayland via Xwayland for non-GNOME compositors | Refused with a warning (F16) |
 | Q-X5 | Tray checkbox vs tri-state control for `auto-strict-purpose` | Checkbox that preserves `auto` until toggled (§3.5) |
 | Q-X6 | Ship a Debian changelog (nfpm `changelog:`) instead of suppressing `debian-changelog-file-missing` | Suppress for now (§3.8.1); revisit when the release process generates changelogs |
-| Q-X7 | Dial the X `net.Conn` ourselves (`xgb.NewConnNetWithCookieHex`, own `DISPLAY` parsing and Xauthority lookup) so a hung server's socket can be closed directly instead of leaking until the server closes it | No: the leak is bounded by the reconnect backoff and needs a hung X server (§3.1.2 item 5); revisit if it is ever observed |
+| Q-X7 | Dial the X `net.Conn` ourselves (`xgb.NewConnNetWithCookieHex`, own `DISPLAY` parsing and Xauthority lookup) so a hung server's socket can be closed directly instead of leaking until the server closes it | Yes (rev. 4): the leak was one goroutine and socket per reconnect attempt; `internal/gswitch/x11conn` does it for both X11 sources (§3.1.2 item 5) |

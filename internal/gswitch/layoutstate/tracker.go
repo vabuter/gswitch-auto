@@ -114,6 +114,12 @@ type Sink interface {
 	Available(source string, ok bool)
 }
 
+// reportRequester is implemented by a Source whose Run reports only changes
+// (X11Source): after Resync replaced the state with a fallback, the source is
+// asked to report its current engine again, or the state would stay the
+// fallback until the next real layout change.
+type reportRequester interface{ RequestReport() }
+
 // Resyncer is a lower-confidence pull source consulted only when every
 // Source.Query fails.
 type Resyncer interface {
@@ -320,7 +326,9 @@ func (t *Tracker) NoteSwitchHint() {
 // success is applied like a signal. Only when every Query fails are the
 // Resyncers consulted (Settings, or Unknown when the layout is not in the
 // pair); when all of them fail the state becomes Unknown. A result is dropped
-// when the state changed or a new hint arrived while Resync was running.
+// when the state changed or a new hint arrived while Resync was running. When
+// a fallback (Settings or Unknown) was applied, every source that implements
+// reportRequester is asked to report its engine again on its next read.
 func (t *Tracker) Resync(ctx context.Context) error {
 	if t == nil {
 		return errors.New("layout tracker is nil")
@@ -349,30 +357,47 @@ func (t *Tracker) Resync(ctx context.Context) error {
 			if next.Index >= 0 {
 				next.Confidence = Settings
 			}
-			t.applyResync(gen, seq, next)
+			if t.applyResync(gen, seq, next) {
+				requestReports(sources)
+			}
 			return nil
 		}
 		errs = append(errs, fmt.Errorf("resync: %w", err))
 	}
-	t.applyResync(gen, seq, State{Index: -1, Confidence: Unknown})
+	if t.applyResync(gen, seq, State{Index: -1, Confidence: Unknown}) {
+		requestReports(sources)
+	}
 	if len(errs) == 0 {
 		return errors.New("layout tracker has no source")
 	}
 	return errors.Join(errs...)
 }
 
-func (t *Tracker) applyResync(gen, seq uint64, next State) {
+// applyResync applies next unless the state or the hint changed since gen and
+// seq were read; it reports whether next was applied.
+func (t *Tracker) applyResync(gen, seq uint64, next State) bool {
 	t.mu.Lock()
 	if t.state.Generation != gen || t.hintSeq != seq {
 		t.mu.Unlock()
 		t.debugf("layout tracker: resync result dropped, state changed meanwhile")
-		return
+		return false
 	}
 	t.cancelHintLocked()
 	changed := t.setLocked(next)
 	t.mu.Unlock()
 	if changed {
 		t.wake()
+	}
+	return true
+}
+
+// requestReports asks every source that reports only changes to report its
+// current engine again (reportRequester).
+func requestReports(sources []Source) {
+	for _, src := range sources {
+		if r, ok := src.(reportRequester); ok {
+			r.RequestReport()
+		}
 	}
 }
 

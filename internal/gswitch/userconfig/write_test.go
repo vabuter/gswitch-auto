@@ -473,13 +473,15 @@ func TestEnsureFiles(t *testing.T) {
 		"kitty", "alacritty", "org.wezfurlong.wezterm", "org.keepassxc.keepassxc",
 		// X11 / Debian WM_CLASS variants (SPEC-X11 §3.9)
 		"gnome-terminal", "kgx", "xterm", "keepassxc",
+		// X11 clients strict mode cannot protect (SPEC-X11 §3.9 rev. 4, K-X4)
+		"emacs", "rxvt", "pinentry-qt", "ksshaskpass", "notepad.exe", "sun-awt-x11-xframepeer",
 	} {
 		if !c.Apps.MatchApp(app, "") {
 			t.Errorf("seed %s missing", app)
 		}
 	}
-	if c.Apps.Len() != 24 {
-		t.Errorf("seeded %d apps, want 24", c.Apps.Len())
+	if c.Apps.Len() != 39 {
+		t.Errorf("seeded %d apps, want 39", c.Apps.Len())
 	}
 	if err := EnsureFiles(dir); err != nil {
 		t.Fatal(err)

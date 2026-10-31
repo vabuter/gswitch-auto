@@ -104,7 +104,11 @@ overrides:
       - libgtk-3-0
       - libx11-6
       - libglib2.0-bin
-      - policykit-1
+      # The tray's --write-config runs through pkexec. bookworm's
+      # policykit-1 is a transitional package and lintian reports
+      # depends-on-obsolete-package (an error) for it.
+      - polkitd
+      - pkexec
       - x11-xkb-utils
     recommends:
       - libgtk-3-bin
@@ -297,7 +301,9 @@ contents:
       mode: 0644
 
   # Licences: the fork, the embedded punto-rs models (hunspell-ru derivative,
-  # see THIRD-PARTY-NOTICES.md) and the vendored clipboard package.
+  # see THIRD-PARTY-NOTICES.md), the vendored clipboard package and the Go
+  # runtime and modules linked into the binaries (GO-LICENSES.txt, generated
+  # and checked by scripts/go-licenses.sh).
   # RPM: %license files under /usr/share/licenses (the license/doc types are
   # RPM-only and skipped by nfpm for other packagers anyway).
   - src: LICENSE
@@ -326,6 +332,12 @@ contents:
       mode: 0644
   - src: third_party/clipboard/LICENSE
     dst: /usr/share/licenses/gswitch-auto/clipboard-LICENSE
+    type: license
+    packager: rpm
+    file_info:
+      mode: 0644
+  - src: third_party/go-licenses/GO-LICENSES.txt
+    dst: /usr/share/licenses/gswitch-auto/GO-LICENSES.txt
     type: license
     packager: rpm
     file_info:
@@ -368,6 +380,11 @@ contents:
       mode: 0644
   - src: third_party/clipboard/LICENSE
     dst: /usr/share/doc/gswitch-auto/clipboard-LICENSE
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: third_party/go-licenses/GO-LICENSES.txt
+    dst: /usr/share/doc/gswitch-auto/GO-LICENSES.txt
     packager: deb
     file_info:
       mode: 0644

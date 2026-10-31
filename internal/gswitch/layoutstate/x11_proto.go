@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
+
+	"github.com/arumata/gswitch/internal/gswitch/x11conn"
 )
 
 // XKB wire protocol pieces used by X11Source (X Keyboard Extension Protocol
@@ -163,15 +164,19 @@ type x11DrainReporter interface {
 	firstDrained() string
 }
 
-// xgbConn is the production x11Conn on a dedicated jezek/xgb connection.
+// xgbConn is the production x11Conn on a dedicated jezek/xgb connection,
+// opened by x11conn.Dial (socket connect and connection setup bounded by the
+// dial context, no goroutine left behind on expiry).
 //
 // Every reply is awaited on its own goroutine and abandoned once ctx is done:
 // xgb drops X errors it has no constructor for (an XKB error such as
 // BadKeyboard has none) with a log line, so a cookie could otherwise wait
-// forever. Close is bounded too, because xgb's graceful Close does a round
-// trip (GetInputFocus) that a hung server never answers; in that case the
-// socket and xgb's two goroutines linger until the server closes it.
+// forever. Close is bounded too (x11conn.Conn.Close): xgb's graceful Close does
+// a round trip (GetInputFocus) that a hung server never answers, so after
+// x11conn.CloseTimeout the socket is closed directly, which ends xgb's
+// goroutines and every abandoned reply.
 type xgbConn struct {
+	x         *x11conn.Conn
 	conn      *xgb.Conn
 	root      xproto.Window
 	opcode    byte
@@ -184,61 +189,34 @@ var (
 	_ x11DrainReporter = (*xgbConn)(nil)
 )
 
-// x11CloseTimeout bounds xgbConn.Close.
-const x11CloseTimeout = time.Second
-
 // x11DrainLimit caps one DrainEvents call at the capacity of xgb's event queue
 // (eventBuffer in xgb.go), so a flood of events cannot keep the poll busy.
 const x11DrainLimit = 5000
 
-// dialX11 opens an xgb connection to display ("" ⇒ $DISPLAY). The handshake
-// is bounded by ctx; a connection that completes after ctx is done is closed.
+// dialX11 opens an xgb connection to display ("" ⇒ $DISPLAY). The socket
+// connect and the connection setup are bounded by ctx and run on the caller's
+// goroutine (x11conn.Dial): an expired attempt leaves no goroutine or socket
+// behind, so Run's reconnect loop cannot accumulate them against a server
+// that accepts connections but never answers. A display whose screen number
+// the server does not have (":0.1" on a one-screen server) is an error, not
+// an index-out-of-range panic in xproto.SetupInfo.DefaultScreen.
 func dialX11(ctx context.Context, display string) (x11Conn, error) {
-	type result struct {
-		conn *xgb.Conn
-		err  error
+	conn, err := x11conn.Dial(ctx, display)
+	if err != nil {
+		return nil, err
 	}
-	done := make(chan result, 1)
-	go func() {
-		conn, err := xgb.NewConnDisplay(display)
-		done <- result{conn, err}
-	}()
-	select {
-	case r := <-done:
-		if r.err != nil {
-			return nil, r.err
-		}
-		return &xgbConn{conn: r.conn, root: xproto.Setup(r.conn).DefaultScreen(r.conn).Root}, nil
-	case <-ctx.Done():
-		go func() {
-			if r := <-done; r.err == nil {
-				r.conn.Close()
-			}
-		}()
-		return nil, ctx.Err()
+	root, err := conn.DefaultRoot()
+	if err != nil {
+		conn.Close()
+		return nil, err
 	}
+	return &xgbConn{x: conn, conn: conn.X(), root: root}, nil
 }
 
 // awaitReply runs call on its own goroutine and returns its result, or
-// ctx.Err() once ctx is done. A late result is dropped; closing the
-// connection makes xgb return io.EOF to the abandoned goroutine.
+// ctx.Err() once ctx is done (x11conn.Await).
 func awaitReply[T any](ctx context.Context, call func() (T, error)) (T, error) {
-	type result struct {
-		value T
-		err   error
-	}
-	done := make(chan result, 1)
-	go func() {
-		value, err := call()
-		done <- result{value, err}
-	}()
-	select {
-	case r := <-done:
-		return r.value, r.err
-	case <-ctx.Done():
-		var zero T
-		return zero, ctx.Err()
-	}
+	return x11conn.Await(ctx, call)
 }
 
 // requestReply sends a hand-built request expecting a reply, exactly like
@@ -339,18 +317,7 @@ func x11DescribeQueued(ev xgb.Event, xerr xgb.Error) string {
 	return "error " + xerr.Error()
 }
 
-// Close closes the connection and waits at most x11CloseTimeout for xgb's
-// graceful shutdown round trip.
+// Close closes the connection in bounded time (x11conn.Conn.Close).
 func (c *xgbConn) Close() {
-	done := make(chan struct{})
-	go func() {
-		c.conn.Close()
-		close(done)
-	}()
-	timer := time.NewTimer(x11CloseTimeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-	case <-timer.C:
-	}
+	c.x.Close()
 }

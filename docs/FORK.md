@@ -124,10 +124,12 @@ scripts/version.sh --vercmp <V>-1 0.8.0-1      # 1 = новее (сравнен�
 3. `git tag -a v0.8.0+auto.N -m "gswitch-auto 0.8.0+auto.N"` на чистом HEAD;
    `scripts/version.sh` должен печатать ровно `0.8.0+auto.N`.
 4. `git push origin main v0.8.0+auto.N`. `.github/workflows/release.yml` сверит тег с
-   `version.sh`, соберёт RPM через `scripts/build-rpm.sh` (с тестами и проверками) и
-   опубликует релиз `gh release create` с RPM и `checksums.txt`; job `deb` в том же
-   образе соберёт `gswitch-auto_<V>-1_amd64.deb` + `checksums-deb.txt` и `publish-deb`
-   догрузит их в тот же релиз. Секреты не нужны, только автоматический `GITHUB_TOKEN`.
+   `version.sh`, параллельно соберёт RPM через `scripts/build-rpm.sh` (с тестами и
+   проверками) и в образе bookworm `gswitch-auto_<V>-1_amd64.deb` + `checksums-deb.txt`
+   (с проверками и lintian). Только если оба пакета собраны и прошли проверки, job
+   `publish` одним `gh release create` опубликует релиз со всеми четырьмя файлами и
+   инструкциями для Fedora и Debian; при ошибке сборки релиз не создаётся вовсе.
+   Секреты не нужны, только автоматический `GITHUB_TOKEN`.
 5. Проверить релиз: `sha256sum -c checksums.txt`, `sha256sum -c checksums-deb.txt`,
    установка по разделу ниже.
 
@@ -284,12 +286,18 @@ journalctl --user -u gswitch.service -b | grep 'layout sources'
   (`AutoUnavailableReason = focus-extension-required`), трей показывает подсказку.
 - `gswitch --detect-layout-switch` на Debian даёт `scancodes: [186]` (`XF86Launch7`), демон
   добавляет его в `switch-input-source` (поведение upstream для GNOME X11); Super+Space
-  продолжает переключать раскладку.
+  продолжает переключать раскладку. Для автозамены демон форка добавляет туда же
+  `<Shift>XF86Launch7` (лог `Added <Shift>XF86Launch7 …`) и переключает Shift+F16: привязку
+  без модификатора GNOME применяет только через 1,5 с после отпускания клавиши, а всплывающее
+  окно переключателя в это время глотает ввод (SPEC-X11 F21). Привязка постоянная, как и
+  upstream-овская; после удаления пакета её можно убрать через `gsettings set
+  org.gnome.desktop.wm.keybindings switch-input-source …`.
 - Диагностика: `gswitch --layout-state --watch 20` (`Session: x11`, `GNOME Shell: 43.9`,
   таблица `us,ru`, группа и индекс; переключения Super+Space видны строками с задержкой
   ≤ 50 мс), `gswitch --focus-state --watch 15`, `busctl --user get-property
   io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto io.github.vabuter.GswitchAuto
-  FocusSuppressedReason` (`purpose-unknown` в xterm и в GTK3-поле пароля — это норма, F8).
+  FocusSuppressedReason` (`excluded-app` в xterm — XIM-клиент сообщает `normal`, F22;
+  `purpose-unknown` в GTK3-поле пароля — это норма, F8).
 - Откат: `sudo apt install ./gswitch_0.8.0_linux_amd64.deb` (если deb upstream сохранён) или
   `sudo apt remove gswitch-auto`, затем `systemctl --user enable --now gswitch.service`.
 - Интеграционные тесты X11 (только чтение): `GSWITCH_X11_TEST=1 go test
@@ -314,12 +322,19 @@ journalctl --user -u gswitch.service -b | grep 'layout sources'
   даст OUT_OF_DATE.
 - X11: источник раскладки — опрос `XkbGetState` каждые 50 мс (без `XkbSelectEvents`:
   у jezek/xgb нет XKB-пакета, а регистрация событий идёт через глобальную незащищённую
-  карту). Подтверждение автозамены на X11 поэтому на ~50–100 мс медленнее ручного пути
-  upstream; опоздавшее изменение группы может только пропустить слово, но не исправить
-  его в неверной раскладке.
+  карту). Изменение группы видно с задержкой до 50 мс; опоздавшее изменение может только
+  пропустить слово, но не исправить его в неверной раскладке. Если `<Shift>XF86Launch7`
+  добавить не удалось (предупреждение в логе) или переключатель раскладки — другая одиночная
+  клавиша, автозамена ждёт всплывающее окно GNOME (~1,5 с), а набранное в это время
+  теряется, как и при ручной конвертации upstream.
 - X11, строгий режим (`auto-strict-purpose=auto` ⇒ true на X11 и при неизвестном типе
-  сессии): без расширения автоисправление недоступно; приложения без IBus-контекста
-  (xterm, Java/SWT, Wine, часть Electron) никогда не исправляются. При выключенном строгом
+  сессии): без расширения автоисправление недоступно; приложения, которые вовсе не
+  фокусируют IBus, никогда не исправляются. Но строгий режим **не защищает** XIM-клиентов
+  (xterm, urxvt, st, Emacs, Java, Wine: IBus отдаёт панели тип по умолчанию FREE_FORM, и
+  поле выглядит как `normal`) и приложения Qt (Qt не сообщает IBus о переходе в поле
+  пароля): их пароли исправляются, если приложения нет в списке исключений. Шаблон
+  исключений содержит XIM-терминалы, Emacs, `sun-awt-x11-*`, `*.exe` и Qt-запросы паролей
+  (K-X4, F22). При выключенном строгом
   режиме GTK3-поле пароля на X11 выглядит как «нет поля» (ibus-im-module не делает focus-in
   для `visibility=FALSE`) и **исправляется** — защищает только список исключений
   (менеджеры паролей в шаблоне). Документированная дыра K-X5, не дефект.

@@ -28,7 +28,7 @@ user_systemctl() {
 }
 
 restore_units() {
-    for cmd in runuser systemctl; do
+    for cmd in runuser systemctl head; do
         command -v "$cmd" >/dev/null 2>&1 || return 0
     done
 
@@ -38,8 +38,9 @@ restore_units() {
         case "$uid" in
             '' | *[!0-9]*) continue ;;
         esac
-        user=""
-        read -r user 2>/dev/null <"$marker" || true
+        # Not `read`: lintian's read-in-maintainer-script (an error) flags
+        # any line starting with it, even with redirected input.
+        user=$(head -n 1 "$marker" 2>/dev/null) || user=""
         [ -n "$user" ] || continue
         runtime_dir="/run/user/$uid"
         [ -S "$runtime_dir/bus" ] || continue

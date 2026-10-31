@@ -239,6 +239,16 @@ Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
   shows the table and the current group. Manual conversions use upstream's
   X11 path unchanged (`XF86Launch7` is added to the Shell's
   `switch-input-source` binding, as upstream does).
+- **Automatic switch.** `XF86Launch7` has no modifier, and GNOME Shell applies
+  such a binding only 1.5 s after the key is released, through a popup that
+  swallows whatever you type meanwhile. For automatic corrections the daemon
+  therefore also adds `<Shift>XF86Launch7` to `switch-input-source`
+  (persistent, like upstream's entry; remove it with `gsettings set
+  org.gnome.desktop.wm.keybindings switch-input-source …` after uninstalling)
+  and switches with Shift+F16, which GNOME applies at once. If the binding
+  cannot be added (logged as a warning), or the layout switch is another
+  single key, an automatic fix waits for the popup (about 1.5 s) and the keys
+  typed meanwhile are lost, as they are with upstream's manual conversion.
 - **`layout-source=ibus` below GNOME Shell 49.3** is harmful, not merely
   useless: the engine reads `xkb:us::eng` in every layout, so the daemon
   would take every word for the first layout and "correct" correct words typed
@@ -257,9 +267,16 @@ Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
   field whose type the extension reports. The reason: GTK's IBus module never
   focuses an input context for a password entry, so on X11 a GTK 3 password
   field looks like "no text field" (`none`); strict mode denies it as
-  `purpose-unknown`. The price: applications without an IBus input context
-  (xterm, Java/SWT, Wine, some Electron builds) are never corrected, and while
-  the extension is missing automatic mode reports `focus-extension-required`.
+  `purpose-unknown`. The price: applications that never focus IBus report no
+  type and are never corrected, and while the extension is missing automatic
+  mode reports `focus-extension-required`. **Strict mode does not protect
+  XIM and Qt clients:** IBus reports every field of an XIM client (xterm,
+  urxvt, st, Emacs, Java and Wine applications) as an ordinary text field, and
+  Qt does not tell IBus when the focus moves to a password field, so their
+  password prompts are corrected like text unless the application is in the
+  exclusion list. The default list contains common XIM terminals, Emacs, Java
+  (`sun-awt-x11-*`), Wine (`*.exe`) and Qt password prompts; add any other
+  Qt or XIM application in which you type passwords.
   Turning strict mode off (tray checkbox "Correct only in fields that report
   their type", or `auto-strict-purpose=false`) restores fail-open behaviour:
   everything not in the exclusion list is corrected, including GTK 3 password
@@ -689,7 +706,7 @@ Notes:
 - Ctrl, Shift, Alt and Super cannot be saved as `convert-key`; they are reserved for conversion gestures. This restriction does not apply to `layout-switch`.
 - If an older configuration uses a modifier as `convert-key`, gswitch uses Double Shift and reports a warning. Settings shows the same fallback; the configuration file changes only when you click Apply.
 - `layout-switch=auto` detects your hotkey from XKB options, GNOME keybindings, or KDE settings; run `gswitch --detect-layout-switch` to see what it finds.
-- On GNOME X11, auto mode keeps your existing layout-switch shortcuts and adds `XF86Launch7` as a persistent internal accelerator. gswitch emits its standard X11 key slot (`KEY_F16`) instead of replaying an unreliable modifier shortcut such as `Super+Space`.
+- On GNOME X11, auto mode keeps your existing layout-switch shortcuts and adds `XF86Launch7` as a persistent internal accelerator. gswitch emits its standard X11 key slot (`KEY_F16`) instead of replaying an unreliable modifier shortcut such as `Super+Space`. gswitch-auto additionally adds `<Shift>XF86Launch7` for its automatic corrections (GNOME applies a modifier-less binding only 1.5 s after the key release).
 - The tray converts GTK/XKB hardware keycodes to evdev scancodes when capturing keys. For manual configuration, use `sudo showkey` to look up scancodes.
 - With more than two layouts configured in the system, set `layout1`/`layout2` explicitly.
 - Run `gswitch -d` to see device UIDs for `blacklist`.

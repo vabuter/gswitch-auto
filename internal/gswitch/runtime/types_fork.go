@@ -13,6 +13,7 @@ const (
 	KEY_RIGHTALT  = 100
 	KEY_DELETE    = 111
 	KEY_RIGHTMETA = 126
+	KEY_F16       = 186 // XF86Launch7, upstream's GNOME X11 layout-switch key
 )
 
 // LED events and evdev state ioctls (linux/input.h).

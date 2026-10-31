@@ -7,7 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/arumata/gswitch/internal/gswitch/detect"
@@ -23,7 +23,10 @@ const (
 	x11DefaultReplyTimeout = time.Second
 	x11ConnectTimeout      = 2 * time.Second
 	// x11TableRefreshPolls is how often _XKB_RULES_NAMES is re-read while
-	// polling (every 40th poll ≈ 2 s at the default interval).
+	// polling (every 40th poll ≈ 2 s at the default interval) as a backstop;
+	// the table is also re-read whenever the group differs from the previous
+	// poll and whenever the poll discarded queued events (a keymap upload
+	// sends MappingNotify), see poll.
 	x11TableRefreshPolls = 40
 )
 
@@ -47,9 +50,12 @@ type X11Options struct {
 // org.gnome.desktop.input-sources sources. Engine is reported on connect and
 // whenever the derived engine name changes; identical polls are silent, so a
 // Pending state (NoteSwitchHint) is not flipped back to Confirmed by a poll.
-// Every poll first drains the connection's event queue, which nothing reads
-// otherwise. Any X error, EOF or reply timeout makes the source unavailable
-// and reconnects with a 200 ms…5 s backoff.
+// The one exception is RequestReport (the Tracker calls it after a Resync
+// replaced the state with a fallback): the next poll reports its engine even
+// when it did not change, so the state does not stay Settings/Unknown until
+// the next real switch. Every poll first drains the connection's event queue,
+// which nothing reads otherwise. Any X error, EOF or reply timeout makes the
+// source unavailable and reconnects with a 200 ms…5 s backoff.
 type X11Source struct {
 	opts         X11Options
 	pollInterval time.Duration
@@ -59,8 +65,31 @@ type X11Source struct {
 	dial  func(ctx context.Context, display string) (x11Conn, error)
 	sleep func(ctx context.Context, d time.Duration) bool
 
-	mu   sync.Mutex
-	live *x11Session // Run's connection while connected; requests on it are serialised by mu
+	// mu serialises the requests on the live connection (poll vs. Query). It
+	// is a one-slot channel so that Query can give up waiting for it when its
+	// context ends (lockCtx); a poll holds it for up to two reply timeouts.
+	mu   chan struct{}
+	live *x11Session // Run's connection while connected; guarded by mu
+
+	// forceReport makes the session loop report the next poll's engine even
+	// when it equals the last one reported (RequestReport).
+	forceReport atomic.Bool
+}
+
+// lock acquires mu.
+func (s *X11Source) lock() { s.mu <- struct{}{} }
+
+// unlock releases mu.
+func (s *X11Source) unlock() { <-s.mu }
+
+// lockCtx acquires mu unless ctx ends first.
+func (s *X11Source) lockCtx(ctx context.Context) error {
+	select {
+	case s.mu <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 var _ Source = (*X11Source)(nil)
@@ -68,6 +97,7 @@ var _ Source = (*X11Source)(nil)
 // x11Session is one connection with its group table.
 type x11Session struct {
 	conn        x11Conn
+	group       int // group of the previous read, -1 before the first
 	opcode      byte
 	major       uint16
 	minor       uint16
@@ -90,6 +120,7 @@ func NewX11Source(opts X11Options) *X11Source {
 		replyTimeout: opts.ReplyTimeout,
 		dial:         x11Dial,
 		sleep:        sleepCtx,
+		mu:           make(chan struct{}, 1),
 	}
 	if s.pollInterval <= 0 {
 		s.pollInterval = x11DefaultPollInterval
@@ -190,7 +221,9 @@ func (s *X11Source) session(ctx context.Context, sink Sink) (connected bool, err
 	if err != nil {
 		return false, s.describeErr(ctx, err)
 	}
+	sess.group = int(group)
 	engine, _ := EngineForGroup(sess.table, int(group))
+	s.forceReport.Store(false) // the connect report below is unconditional
 	s.setLive(sess)
 	defer s.setLive(nil)
 	s.log("X11 layout source: connected to display %s (XKB %d.%d, opcode %d), layouts %s, group %d, engine %q",
@@ -211,7 +244,7 @@ func (s *X11Source) session(ctx context.Context, sink Sink) (connected bool, err
 		if err != nil {
 			return true, s.describeErr(ctx, err)
 		}
-		if engine != last {
+		if s.forceReport.Swap(false) || engine != last {
 			last = engine
 			sink.Engine(SourceX11, engine)
 		}
@@ -227,7 +260,7 @@ func (s *X11Source) connect(ctx context.Context, warn bool) (*x11Session, error)
 	if err != nil {
 		return nil, fmt.Errorf("connect to X display %s: %w", s.displayName(), err)
 	}
-	sess := &x11Session{conn: conn}
+	sess := &x11Session{conn: conn, group: -1}
 	if err := s.initSession(ctx, sess, warn); err != nil {
 		conn.Close()
 		return nil, s.describeErr(ctx, err)
@@ -302,19 +335,25 @@ func (s *X11Source) getState(ctx context.Context, sess *x11Session) (uint8, erro
 	return sess.conn.GetState(rctx)
 }
 
-// poll drains the event queue, reads the group (and re-reads the table when
-// refresh is set or the group is outside it) under the request mutex and
-// returns the derived engine name ("" when the group is still outside the
-// table).
+// poll drains the event queue, reads the group and returns the derived engine
+// name ("" when the group is still outside the table), under the request
+// mutex. The table is re-read first when refresh is set (the periodic
+// backstop), when the group differs from the previous read, when the group is
+// outside the table, or when the drain discarded anything. GNOME reorders the
+// table by uploading a new keymap: mutter rewrites _XKB_RULES_NAMES before it
+// locks the group, and the upload queues MappingNotify, so a stale table is
+// never used to name a new group.
 func (s *X11Source) poll(ctx context.Context, sess *x11Session, refresh bool) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.drainEvents(sess)
+	s.lock()
+	defer s.unlock()
+	drained := s.drainEvents(sess)
 	group, err := s.getState(ctx, sess)
 	if err != nil {
 		return "", err
 	}
-	if refresh || int(group) >= len(sess.table) {
+	changed := sess.group >= 0 && int(group) != sess.group
+	sess.group = int(group)
+	if refresh || changed || drained > 0 || int(group) >= len(sess.table) {
 		if err := s.readTable(ctx, sess, true); err != nil {
 			return "", err
 		}
@@ -323,14 +362,25 @@ func (s *X11Source) poll(ctx context.Context, sess *x11Session, refresh bool) (s
 	return engine, nil
 }
 
+// RequestReport makes the session loop report the next poll's engine to the
+// sink even when it did not change. The Tracker calls it after Resync replaced
+// the state with a fallback (gsettings Settings or Unknown, e.g. because this
+// source's Query timed out): identical polls are otherwise silent, so the state
+// would stay a fallback until the next real layout switch. The forced report
+// comes after Resync left Pending, so a hint is not cut short by it.
+func (s *X11Source) RequestReport() {
+	s.forceReport.Store(true)
+}
+
 // drainEvents empties the connection's event queue before the poll's request:
 // the source selects no events, but xgb queues whatever the server sends
 // unasked, and a full queue blocks xgb's reader and with it every reply. The
 // first non-empty drain is logged once per connection, with its first item.
-func (s *X11Source) drainEvents(sess *x11Session) {
+// It returns how many items were discarded.
+func (s *X11Source) drainEvents(sess *x11Session) int {
 	n := sess.conn.DrainEvents()
 	if n == 0 || sess.drained {
-		return
+		return n
 	}
 	sess.drained = true
 	first := ""
@@ -339,6 +389,7 @@ func (s *X11Source) drainEvents(sess *x11Session) {
 	}
 	s.log("X11 layout source: discarded %d queued X event(s)/error(s) on display %s%s (the source selects none; further ones on this connection are discarded silently)",
 		n, s.displayName(), first)
+	return n
 }
 
 // Query implements Source: XkbGetState on Run's live connection (serialised
@@ -362,9 +413,12 @@ func (s *X11Source) Query(ctx context.Context) (string, error) {
 }
 
 // queryLive queries the live connection; ok is false when Run is not connected.
+// The wait for the request mutex (held by a poll) is bounded by ctx.
 func (s *X11Source) queryLive(ctx context.Context) (engine string, ok bool, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lockCtx(ctx); err != nil {
+		return "", true, fmt.Errorf("wait for the X11 layout poll: %w", err)
+	}
+	defer s.unlock()
 	sess := s.live
 	if sess == nil {
 		return "", false, nil
@@ -378,8 +432,8 @@ func (s *X11Source) queryLive(ctx context.Context) (engine string, ok bool, err 
 }
 
 func (s *X11Source) setLive(sess *x11Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	s.live = sess
 }
 

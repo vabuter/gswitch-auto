@@ -486,7 +486,9 @@ func (e *AutoEngine) fire(c *Converter, p *autoPending) {
 	}
 	if err := e.d.Emit(events); err != nil {
 		// Nothing is recorded: the switch confirmation fails before any
-		// text is touched, and the buffer still matches the screen.
+		// text is touched, and the buffer still matches the screen (input
+		// that a modifier-less GNOME popup swallowed meanwhile was discarded
+		// with it, autoSwitchPlan).
 		e.skip(autoPrefixEmit+err.Error(), info)
 		return
 	}
