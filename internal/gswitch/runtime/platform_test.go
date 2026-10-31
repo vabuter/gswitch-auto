@@ -107,7 +107,7 @@ func TestSelectPlatformMatrix(t *testing.T) {
 				note: "IBus layout source deferred: GNOME Shell version unknown"}},
 		{name: "wayland gnome ibus 43.9", env: platformTestWaylandGNOME(), layoutSource: "ibus", focusSource: "auto", euid: 1000, probe: platformTestShell43,
 			want: platformTestWant{wayland: true, gnome: true, ibus: true, focusExt: true, probed: true,
-				warning: "layout-source=ibus forces the IBus source; GNOME Shell 43.9 reports a fixed engine below 49.3"}},
+				warning: "layout-source=ibus forces the IBus source although GNOME Shell 43.9 reports a fixed engine below 49.3"}},
 		{name: "x11 gnome auto", env: platformTestX11GNOME(), layoutSource: "auto", focusSource: "auto", euid: 1000, probe: platformTestShell43,
 			want: platformTestWant{x11Session: true, gnome: true, x11: true, focusExt: true, focusX11: true, probed: true}},
 		{name: "x11 gnome x11", env: platformTestX11GNOME(), layoutSource: "x11", focusSource: "auto", euid: 1000, probe: platformTestShell43,
