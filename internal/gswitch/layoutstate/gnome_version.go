@@ -181,6 +181,12 @@ func IBusEngineTracksLayout(version string) bool {
 // keeps probing). reason is "", GuardReasonShellVersionUnknown or
 // GuardReasonIBusEngineStatic and describes the probe result whatever the
 // decision.
+//
+// A forced source below 49.3 is harmful, not merely useless: the engine reads
+// "xkb:us::eng" in every layout, so the tracker confirms the first layout
+// forever and words typed in the second one are judged wrong-layout words.
+// The warning says so; selectPlatform refuses the override in X11 sessions
+// (where the XKB source exists) and replaces this warning by its refusal.
 func IBusSourceAllowed(layoutSource string, info ShellInfo) (ok, deferred bool, reason, warning string) {
 	switch {
 	case info.Err != nil:
@@ -194,7 +200,8 @@ func IBusSourceAllowed(layoutSource string, info ShellInfo) (ok, deferred bool, 
 		case GuardReasonShellVersionUnknown:
 			warning = fmt.Sprintf("layout-source=ibus forces the IBus source; GNOME Shell version unknown (%v)", info.Err)
 		case GuardReasonIBusEngineStatic:
-			warning = fmt.Sprintf("layout-source=ibus forces the IBus source; GNOME Shell %s reports a fixed engine below 49.3", info.Version)
+			warning = fmt.Sprintf("layout-source=ibus forces the IBus source although GNOME Shell %s reports a fixed engine below 49.3: "+
+				"every layout reads as the first one, so automatic correction misjudges words typed in the second layout", info.Version)
 		}
 		return true, false, reason, warning
 	case "auto":

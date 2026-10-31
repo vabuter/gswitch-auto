@@ -70,7 +70,7 @@ func TestIBusSourceAllowed(t *testing.T) {
 		info         ShellInfo
 		ok, deferred bool
 		reason       string
-		warning      string // "" or a required substring
+		warning      string // the exact warning; "" ⇒ none
 	}{
 		{name: "auto tracking", layoutSource: "auto", info: ShellInfo{Version: "50.6"}, ok: true},
 		{name: "auto boundary", layoutSource: "auto", info: ShellInfo{Version: "49.3"}, ok: true},
@@ -79,10 +79,19 @@ func TestIBusSourceAllowed(t *testing.T) {
 		{name: "auto probe error", layoutSource: "auto", info: ShellInfo{Err: probeErr}, deferred: true, reason: GuardReasonShellVersionUnknown},
 		{name: "ibus tracking", layoutSource: "ibus", info: ShellInfo{Version: "50.6"}, ok: true},
 		{name: "ibus static", layoutSource: "ibus", info: ShellInfo{Version: "43.9"}, ok: true,
-			reason: GuardReasonIBusEngineStatic, warning: "GNOME Shell 43.9 reports a fixed engine below 49.3"},
+			reason: GuardReasonIBusEngineStatic,
+			warning: "layout-source=ibus forces the IBus source although GNOME Shell 43.9 reports a fixed engine below 49.3: " +
+				"every layout reads as the first one, so automatic correction misjudges words typed in the second layout"},
+		{name: "ibus below boundary", layoutSource: "ibus", info: ShellInfo{Version: "49.2"}, ok: true,
+			reason: GuardReasonIBusEngineStatic,
+			warning: "layout-source=ibus forces the IBus source although GNOME Shell 49.2 reports a fixed engine below 49.3: " +
+				"every layout reads as the first one, so automatic correction misjudges words typed in the second layout"},
+		{name: "ibus boundary", layoutSource: "ibus", info: ShellInfo{Version: "49.3"}, ok: true},
 		{name: "ibus probe error", layoutSource: "ibus", info: ShellInfo{Err: probeErr}, ok: true,
-			reason: GuardReasonShellVersionUnknown, warning: "GNOME Shell version unknown"},
+			reason:  GuardReasonShellVersionUnknown,
+			warning: "layout-source=ibus forces the IBus source; GNOME Shell version unknown (org.gnome.Shell is not available on the session bus: boom)"},
 		{name: "none", layoutSource: "none", info: ShellInfo{Version: "50.6"}},
+		{name: "none static", layoutSource: "none", info: ShellInfo{Version: "43.9"}, reason: GuardReasonIBusEngineStatic},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -91,11 +100,8 @@ func TestIBusSourceAllowed(t *testing.T) {
 				t.Fatalf("IBusSourceAllowed(%q, %+v) = %v, %v, %q; want %v, %v, %q",
 					tt.layoutSource, tt.info, ok, deferred, reason, tt.ok, tt.deferred, tt.reason)
 			}
-			if tt.warning == "" && warning != "" {
-				t.Fatalf("unexpected warning %q", warning)
-			}
-			if tt.warning != "" && (!strings.Contains(warning, tt.warning) || !strings.HasPrefix(warning, "layout-source=ibus forces the IBus source")) {
-				t.Fatalf("warning = %q, want prefix %q and %q", warning, "layout-source=ibus forces the IBus source", tt.warning)
+			if warning != tt.warning {
+				t.Fatalf("warning = %q, want %q", warning, tt.warning)
 			}
 		})
 	}
