@@ -46,6 +46,11 @@ type PlatformSelection struct {
 	Warnings []string // configuration warnings (logged once, repeated in ConfigWarnings)
 }
 
+// platformIBusRefusedX11 is the warning of a refused layout-source=ibus in
+// an X11 session whose GNOME Shell is below 49.3 (SPEC-X11 §2.1); it replaces
+// IBusSourceAllowed's forced-source warning there.
+const platformIBusRefusedX11 = "layout-source=ibus is refused in an X11 session: GNOME Shell %s reports the fixed engine xkb:us::eng below 49.3; use layout-source=auto or x11"
+
 // selectPlatform is pure given its inputs. probe is the forkProbeShellVersion
 // hook in production and a fake in tests; it runs at most once, and only
 // when the IBus source is a candidate (layout-source ibus, or auto in a
@@ -91,6 +96,16 @@ func (sel *PlatformSelection) selectLayout(layoutSource string, env *SessionEnv,
 		return
 	}
 	ok, deferred, reason, warning := layoutstate.IBusSourceAllowed(layoutSource, sel.Shell)
+	if sel.X11Session && layoutSource == userconfig.SourceIBus && reason == layoutstate.GuardReasonIBusEngineStatic {
+		// Refused, not merely warned about (SPEC-X11 §2.1, rev. 3): below
+		// 49.3 the engine reads xkb:us::eng in every layout, so a forced
+		// IBus source would confirm the first layout forever and misjudge
+		// every word typed in the second one, while the XKB source that
+		// tracks the real group exists in this session.
+		sel.LayoutReason = autoUnavailableLayoutSourceUnsupported
+		sel.Warnings = append(sel.Warnings, fmt.Sprintf(platformIBusRefusedX11, sel.Shell.Version))
+		return
+	}
 	if warning != "" {
 		sel.Warnings = append(sel.Warnings, warning)
 	}

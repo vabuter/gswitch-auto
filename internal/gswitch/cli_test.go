@@ -62,6 +62,9 @@ func TestLayoutStateSources(t *testing.T) {
 	guarded := gsruntime.PlatformSelection{Wayland: true, GNOME: true, LayoutIBus: true, LayoutIBusGuarded: true,
 		Shell: layoutstate.ShellInfo{Err: layoutstate.ErrShellUnavailable}}
 	none := gsruntime.PlatformSelection{Wayland: true, LayoutReason: "layout-source-unsupported"}
+	// The Debian machine with layout-source=ibus: refused (SPEC-X11 §2.1).
+	refused := gsruntime.PlatformSelection{X11Session: true, GNOME: true, FocusExt: true, FocusX11: true,
+		LayoutReason: "layout-source-unsupported", Shell: layoutstate.ShellInfo{Version: "43.9"}}
 	tests := []struct {
 		name            string
 		sel             gsruntime.PlatformSelection
@@ -79,6 +82,11 @@ func TestLayoutStateSources(t *testing.T) {
 		{name: "forced ibus selected", sel: ibus, source: diagSourceIBus, runIBus: true},
 		{name: "forced x11 on wayland", sel: ibus, source: diagSourceX11, runX11: true, note: "Wayland session"},
 		{name: "forced x11 selected", sel: x11, source: diagSourceX11, runX11: true},
+		{name: "auto refused ibus on x11", sel: refused, source: diagSourceAuto},
+		{name: "forced ibus refused on x11", sel: refused, source: diagSourceIBus, runIBus: true,
+			note: "IBus layout source disabled for GNOME Shell 43.9"},
+		{name: "forced x11 with ibus refused", sel: refused, source: diagSourceX11, runX11: true,
+			note: "X11 layout source forced; the daemon would not use it"},
 		{name: "forced x11 elsewhere", sel: gsruntime.PlatformSelection{X11Session: true}, source: diagSourceX11, runX11: true,
 			note: "X11 layout source forced"},
 	}

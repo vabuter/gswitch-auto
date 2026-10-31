@@ -21,7 +21,8 @@ import (
 //     "focus-unknown" | "password-field" | "terminal" | "purpose-unknown" |
 //     "excluded-app".
 //   - ConfigWarnings also carries the platform selection warnings
-//     (layout-source=x11 on Wayland, layout-source=ibus below GNOME Shell 49.3).
+//     (layout-source=x11 on Wayland, layout-source=ibus below GNOME Shell 49.3:
+//     forced with a warning on Wayland, refused in an X11 session).
 const (
 	propAutoEnabled           = "AutoEnabled"
 	propAutoEnabledUnsaved    = "AutoEnabledUnsaved"

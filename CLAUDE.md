@@ -78,7 +78,9 @@ Per-user fork settings live in `~/.config/gswitch/{auto.conf,exceptions-words.tx
 exceptions-apps.txt}` (written by the tray only; the daemon reads them). Auto mode is off by
 default; LShift+RShift toggles it, LShift+RAlt+RCtrl converts the selection (README has
 the full key reference). `auto-strict-purpose=auto` is strict on X11 and when the session
-type is unknown, off on Wayland (fail-closed); `layout-source` accepts `auto|ibus|x11|none`.
+type is unknown, off on Wayland (fail-closed); `layout-source` accepts `auto|ibus|x11|none`
+(`ibus` is refused in X11 sessions below GNOME Shell 49.3 and only warned about on Wayland:
+the fixed `xkb:us::eng` engine makes it misjudge every word typed in the second layout).
 
 ## Facts that constrain any fork (verified 2026-10-09, see research/)
 

@@ -87,14 +87,12 @@ Both packages provide `gswitch`, replace the upstream package (the RPM
 obsoletes `gswitch < 0.9`, the `.deb` declares `Conflicts`/`Replaces`
 `gswitch`) and keep the binary names and file paths, so they replace an
 installed upstream package in place. If upstream's service was enabled, the
-package enables it again after the replacement (on Debian, dpkg runs
-upstream's removal script before the new package's scripts, so the user unit
-is re-enabled for every logged-in user who had upstream installed, even one
-who had deliberately disabled it; plain upgrades of `gswitch-auto` are not
-affected). Log out and back in once afterwards, so that GNOME Shell loads the
-bundled extension (needed for application exclusions; required on X11 by
-strict purpose mode) and the new tray starts; on X11, Alt+F2, `r`, Enter
-restarts the Shell in place instead. Rollback:
+package enables it again after the replacement (on Debian by a heuristic
+that can also enable a deliberately disabled unit, see
+[X11 notes](#x11-notes)). Log out and back in once afterwards, so that
+GNOME Shell loads the bundled extension (needed for application exclusions;
+required on X11 by strict purpose mode) and the new tray starts; on X11,
+Alt+F2, `r`, Enter restarts the Shell in place instead. Rollback:
 `sudo dnf swap gswitch-auto ./gswitch_0.8.0_linux_amd64.rpm` or
 `sudo apt install ./gswitch_0.8.0_linux_amd64.deb` (or `sudo apt remove
 gswitch-auto`), then `systemctl --user enable --now gswitch.service`. Build
@@ -133,7 +131,7 @@ daemon only reads them and picks up changes without a restart.
 | `hotkey-convert-selection` | `42+97+100` | Selection chord (LShift+RCtrl+RAlt), or `none` |
 | `ipc-expose-words` | `true` | Include corrected and learned words in D-Bus properties and signals |
 | `focus-source` | `auto` | `auto` or `off` (restart required) |
-| `layout-source` | `auto` | `auto`, `ibus`, `x11` or `none` (restart required). `auto` picks `ibus` on GNOME Wayland (Shell 49.3+) and `x11` (the XKB group of the display) on GNOME X11; `x11` also enables the X11 source on other X11 desktops, `ibus` forces the IBus engine (useless below Shell 49.3) |
+| `layout-source` | `auto` | `auto`, `ibus`, `x11` or `none` (restart required). `auto` picks `ibus` on GNOME Wayland (Shell 49.3+) and `x11` (the XKB group of the display) on GNOME X11; `x11` also enables the X11 source on other X11 desktops, `ibus` forces the IBus engine: refused in X11 sessions below Shell 49.3, harmful on Wayland below 49.3 (see [X11 notes](#x11-notes)) |
 | `layout-hint-timeout-ms` | `400` | How long a physical layout-switch chord marks the layout as pending (restart required) |
 
 Invalid values fall back to the default with a warning; unknown keys are
@@ -241,6 +239,15 @@ Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
   shows the table and the current group. Manual conversions use upstream's
   X11 path unchanged (`XF86Launch7` is added to the Shell's
   `switch-input-source` binding, as upstream does).
+- **`layout-source=ibus` below GNOME Shell 49.3** is harmful, not merely
+  useless: the engine reads `xkb:us::eng` in every layout, so the daemon
+  would take every word for the first layout and "correct" correct words typed
+  in the second one (keys `ghbdtn` typed as `привет`), flipping the layout
+  back and forth. In an X11 session the daemon therefore refuses it (warning
+  `layout-source=ibus is refused in an X11 session …`, automatic mode
+  unavailable with `layout-source-unsupported`); use `auto` or `x11`. On
+  Wayland it is kept as an explicit override, with a start warning that says
+  so.
 - **Focus.** The focused application comes from the Shell extension when it
   is enabled and from `_NET_ACTIVE_WINDOW` (`WM_CLASS`, `_GTK_APPLICATION_ID`)
   otherwise, so the exclusion list works without the extension. The purpose of
@@ -266,6 +273,19 @@ Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
   `XDG_SESSION_TYPE` (custom `.xsession`), run `systemctl --user
   import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE`; without it the
   daemon selects no X11 source and automatic mode stays unavailable.
+- **Package replacement.** Upstream's removal script disables and stops the
+  user unit before any script of the `.deb` runs: under `dpkg -i` upstream's
+  prerm runs first in the same run, under `apt install` apt removes `gswitch`
+  in a separate run and leaves it in the `config-files` state. The `.deb`
+  therefore uses the heuristic "upstream is or was installed": on the first
+  installation of `gswitch-auto` (also a reinstallation after `apt remove
+  gswitch-auto`) it enables and starts `gswitch.service` for every logged-in
+  user when dpkg still knows upstream `gswitch`, as installed or replaced in
+  this run or as `config-files` left by an earlier removal without purge.
+  This also happens if you had disabled the unit deliberately; `sudo apt
+  purge gswitch` beforehand or `systemctl --user disable --now
+  gswitch.service` afterwards undoes it. Upgrades of `gswitch-auto` never
+  touch it.
 - **Other X11 desktops** (KDE, awesome, …) get no layout source with
   `layout-source=auto`; `layout-source=x11` enables the XKB source there
   (best effort, no purpose information, so `auto-strict-purpose=false` is
@@ -275,8 +295,10 @@ Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
 
 - The daemon keeps upstream's sandbox: the systemd user unit is unchanged
   (`ProtectHome=read-only`), and the daemon writes nothing under `$HOME`.
-  New connections are the session bus and the IBus bus (both AF_UNIX); there
-  is still no network code.
+  New connections are the session bus, the IBus bus and, in X11 sessions,
+  the X server's local socket (all AF_UNIX; the fork's X11 sources only read
+  the XKB group and window properties and change nothing on the server);
+  there is still no network code.
 - Typed text is not stored. The only words written to disk are exception
   words: the ones you add, and words learned on undo, which the tray appends
   to `exceptions-words.txt` (0600).

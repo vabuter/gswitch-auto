@@ -20,7 +20,9 @@ Shift); форк gswitch-auto с автоматическим режимом —
   `switch-input-source` → `['<Super>space', 'XF86Keyboard']`.
 - `ibus engine` печатает `xkb:us::eng` в **обеих** раскладках: GNOME Shell ≤ 49.2 ставит
   фиксированный engine для всех XKB-источников (`js/ui/status/keyboard.js`), поэтому
-  IBus-трекер там бесполезен. Раскладка читается из XKB-группы X-дисплея (опрос
+  IBus-трекер там бесполезен, а принудительный `layout-source=ibus` вреден (все слова
+  второй раскладки считались бы набранными в первой) — демон отклоняет его в X11-сессии
+  ниже 49.3 (`layout-source-unsupported`). Раскладка читается из XKB-группы X-дисплея (опрос
   `XkbGetState`, порядок групп = порядок `sources`), фокус — из `_NET_ACTIVE_WINDOW` и
   расширения (legacy-дерево для GNOME 43), строгий режим по умолчанию включён
   (`docs/SPEC-X11.md`). Пакет: `.deb`, сборка `make deb` в podman-образе

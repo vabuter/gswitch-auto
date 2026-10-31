@@ -262,13 +262,20 @@ journalctl --user -u gswitch.service -b | grep 'layout sources'
 #   layout sources: x11 (GNOME Shell 43.9); focus sources: extension, x11; strict purpose: true
 ```
 
-- Порядок dpkg при замене (Conflicts+Replaces+Provides): `prerm remove in-favour`
-  **upstream**-пакета выполняется до нашего `preinst`, и upstream `preremove.sh` уже выключил
-  user unit. `scripts/deb/preinst.sh` при `$1 = install` и установленном `gswitch` пишет
-  маркер `/run/gswitch-auto/replacing.<uid>` для вошедших пользователей, `postinst.sh` по
-  маркерам делает `daemon-reload` и `enable --now`, если unit выключен. Эвристика: тот, у
-  кого upstream стоял, но unit был намеренно выключен, получит его включённым; обычные
-  обновления `gswitch-auto` (`$1 = upgrade`) не затрагиваются.
+- Порядок замены (Conflicts+Replaces+Provides) зависит от фронтенда, но upstream
+  `preremove.sh` в любом случае выключает и останавливает user unit **до** нашего `preinst`:
+  при `dpkg -i` в том же прогоне сначала выполняется `prerm remove in-favour` upstream-пакета
+  (`dpkg-query` показывает его `half-configured`/`half-installed`), при `apt install` apt
+  удаляет `gswitch` отдельным прогоном dpkg (обычный `prerm remove`), и наш `preinst` видит
+  upstream в состоянии **`config-files`**. `scripts/deb/preinst.sh` при `$1 = install` и
+  любом статусе `gswitch`, кроме пустого и `not-installed` (в том числе `config-files`),
+  пишет маркер `/run/gswitch-auto/replacing.<uid>` для вошедших пользователей,
+  `postinst.sh` по маркерам делает `daemon-reload` и `enable --now`, если unit выключен.
+  Эвристика «upstream стоит или стоял»: unit включится и у того, кто выключил его
+  намеренно, и после давнего `apt remove gswitch` без purge (остались `config-files`).
+  Отменить: `sudo apt purge gswitch` заранее или `systemctl --user disable --now
+  gswitch.service` после. Обычные обновления `gswitch-auto` (`$1 = upgrade`) не
+  затрагиваются.
 - Расширение: пакет ставит **legacy**-дерево (`function init()`, `shell-version 43/44`).
   GNOME 43 сканирует каталоги расширений один раз за сессию, `ReloadExtension` не
   поддерживается: выйти и войти, либо Alt+F2, `r`, Enter (только X11). Затем включить в
@@ -319,6 +326,17 @@ journalctl --user -u gswitch.service -b | grep 'layout sources'
 - X11 без `XDG_SESSION_TYPE` в окружении `systemd --user` (не GDM, свой `.xsession`): демон
   не выбирает X11-источники (`layout-source-unsupported`) и работает строго — fail-closed.
   Лечение: `systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE`.
+- `layout-source=ibus` при GNOME Shell < 49.3 не бесполезен, а вреден: движок там всегда
+  `xkb:us::eng`, трекер навсегда подтверждает первую раскладку, и правильное слово во
+  второй (клавиши `ghbdtn`, на экране `привет`) считается набранным не в той раскладке;
+  замена дважды переключает раскладку и прерывается. Поэтому в X11-сессии ниже 49.3 демон
+  его отклоняет (`selectPlatform`: предупреждение `layout-source=ibus is refused in an X11
+  session …`, `AutoUnavailableReason = layout-source-unsupported`; нужен `auto` или `x11`),
+  а на Wayland оставляет как явное переопределение с предупреждением о вреде.
+- Deb: повторное включение user unit после замены upstream работает по эвристике
+  «upstream стоит или стоял» (включая его `config-files`, см. раздел установки): может
+  включить намеренно выключенный unit. Не вопрос безопасности: остановленный демон ничего
+  не печатает, автомод по умолчанию выключен.
 
 ## Решения, принятые при реализации
 

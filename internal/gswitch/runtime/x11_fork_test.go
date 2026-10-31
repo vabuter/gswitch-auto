@@ -169,6 +169,9 @@ func TestEnableAutoReasonsX11(t *testing.T) {
 			reason: autoUnavailableLayoutSourceUnsupported, warning: "layout-source=x11 needs an X11 session"},
 		{name: "wayland kde", env: platformTestWaylandKDE(), probe: platformTestShell50,
 			reason: autoUnavailableLayoutSourceUnsupported},
+		// Rev. 3: the Debian machine with a forced IBus source.
+		{name: "x11 gnome ibus below 49.3 refused", env: platformTestX11GNOME(), conf: "layout-source=ibus\n", probe: platformTestShell43,
+			reason: autoUnavailableLayoutSourceUnsupported, warning: "layout-source=ibus is refused in an X11 session"},
 		{name: "layout-source none", env: platformTestX11GNOME(), conf: "layout-source=none\n", probe: platformTestShell43,
 			reason: autoUnavailableLayoutSourceOf},
 	}
@@ -419,5 +422,68 @@ func TestX11SourceErrorNamesDisplay(t *testing.T) {
 	}
 	if errors.Is(errors.New(msg), layoutstate.ErrIBusNotRunning) {
 		t.Fatal("the IBus source ran in an X11 session")
+	}
+}
+
+// TestInitPlatformStartLog pins the start lines of initPlatform (SPEC-X11
+// §2, MX1, MX3): the warnings first, then the note, then the summary; on the
+// Debian machine a forced layout-source=ibus logs only the refusal warning
+// (not IBusSourceAllowed's forced-source warning) and selects no source.
+func TestInitPlatformStartLog(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     *SessionEnv
+		layout  string
+		probe   layoutstate.ShellInfo
+		lines   []string // in this order
+		absent  []string
+		warning int // number of "Warning:" lines
+	}{
+		{name: "debian x11 gnome default", env: platformTestX11GNOME(), layout: "auto", probe: platformTestShell43,
+			lines: []string{"layout sources: x11 (GNOME Shell 43.9); focus sources: extension, x11; strict purpose: true"}},
+		{name: "debian x11 gnome forced ibus refused", env: platformTestX11GNOME(), layout: "ibus", probe: platformTestShell43,
+			lines: []string{
+				"Warning: layout-source=ibus is refused in an X11 session: GNOME Shell 43.9 reports the fixed engine xkb:us::eng below 49.3; use layout-source=auto or x11",
+				"layout sources: none (layout-source-unsupported) (GNOME Shell 43.9); focus sources: extension, x11; strict purpose: true",
+			},
+			absent: []string{"forces the IBus source", "IBus layout source disabled"}, warning: 1},
+		{name: "fedora wayland gnome default", env: platformTestWaylandGNOME(), layout: "auto", probe: platformTestShell50,
+			lines: []string{"layout sources: ibus (GNOME Shell 50.6); focus sources: extension; strict purpose: false"}},
+		{name: "wayland gnome forced ibus below 49.3 kept", env: platformTestWaylandGNOME(), layout: "ibus", probe: platformTestShell43,
+			lines: []string{
+				"Warning: layout-source=ibus forces the IBus source although GNOME Shell 43.9 reports a fixed engine below 49.3",
+				"layout sources: ibus (GNOME Shell 43.9); focus sources: extension; strict purpose: false",
+			},
+			absent: []string{"refused"}, warning: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := forkGeteuid
+			forkGeteuid = func() int { return 1000 }
+			t.Cleanup(func() { forkGeteuid = orig })
+			gvTestSetShellInfo(t, tt.probe)
+			s, _ := forkTestSwitcher(t, &Config{})
+			s.debug = true
+			s.sessionEnv = tt.env
+			st := userconfig.DefaultSettings()
+			st.LayoutSource = tt.layout
+			out := captureStdout(t, func() { s.initPlatform(st) })
+			pos := 0
+			for _, line := range tt.lines {
+				i := strings.Index(out[pos:], line)
+				if i < 0 {
+					t.Fatalf("log lacks %q after offset %d:\n%s", line, pos, out)
+				}
+				pos += i + len(line)
+			}
+			for _, unwanted := range tt.absent {
+				if strings.Contains(out, unwanted) {
+					t.Fatalf("log contains %q:\n%s", unwanted, out)
+				}
+			}
+			if got := strings.Count(out, "Warning:"); got != tt.warning {
+				t.Fatalf("log has %d warnings, want %d:\n%s", got, tt.warning, out)
+			}
+		})
 	}
 }

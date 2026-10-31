@@ -26,7 +26,8 @@ const forkShellProbeTimeout = 2 * time.Second
 // (s.platform, SPEC-X11 §2.1) when the layout pair is known: the X11 XKB
 // source in X11 GNOME sessions (or with layout-source=x11), the IBus source
 // on GNOME Shell 49.3+ (guarded while the version cannot be read, forced
-// with a warning by layout-source=ibus), never both; the gsettings resyncer
+// with a warning by layout-source=ibus, which an X11 session below 49.3
+// refuses), never both; the gsettings resyncer
 // only on GNOME. Without a source the tracker stays nil and the manual path
 // runs exactly the upstream code. The tracker is started by startFork.
 func (s *Switcher) initTracker(st userconfig.Settings) {
