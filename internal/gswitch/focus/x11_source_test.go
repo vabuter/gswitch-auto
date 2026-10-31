@@ -49,16 +49,22 @@ type x11FocusTestConn struct {
 	windows   map[uint32]x11FocusTestWindow
 	selected  []uint32
 	readErr   error // injected GetProperty failure (not BadWindow)
-	events    chan x11FocusTestEvent
-	closed    chan struct{}
-	closeOnce sync.Once
+	// blockReads makes GetProperty wait until the connection is closed and
+	// then fail with io.EOF, like an xgb reply that never arrives; each
+	// blocked read is announced on readBlocked.
+	blockReads  bool
+	readBlocked chan struct{}
+	events      chan x11FocusTestEvent
+	closed      chan struct{}
+	closeOnce   sync.Once
 }
 
 func x11FocusTestNewConn() *x11FocusTestConn {
 	return &x11FocusTestConn{
-		windows: map[uint32]x11FocusTestWindow{},
-		events:  make(chan x11FocusTestEvent, 16),
-		closed:  make(chan struct{}),
+		windows:     map[uint32]x11FocusTestWindow{},
+		readBlocked: make(chan struct{}, 1),
+		events:      make(chan x11FocusTestEvent, 16),
+		closed:      make(chan struct{}),
 	}
 }
 
@@ -97,9 +103,24 @@ func (c *x11FocusTestConn) SelectPropertyChanges(window uint32) error {
 	return nil
 }
 
-func (c *x11FocusTestConn) GetProperty(window, property, typ uint32) ([]byte, error) {
+func (c *x11FocusTestConn) GetProperty(window, property, typ, length uint32) ([]byte, error) {
 	c.mu.Lock()
+	if c.blockReads {
+		c.mu.Unlock()
+		c.readBlocked <- struct{}{}
+		<-c.closed
+		return nil, io.EOF
+	}
 	defer c.mu.Unlock()
+	// SPEC-X11 §3.2.1 request sizes: one unit for the WINDOW value of
+	// _NET_ACTIVE_WINDOW, 256 units for the window properties.
+	wantLen := uint32(x11PropertyMaxLen)
+	if window == x11FocusTestRoot {
+		wantLen = 1
+	}
+	if length != wantLen {
+		return nil, fmt.Errorf("GetProperty(0x%x, %d) asked for %d units, want %d", window, property, length, wantLen)
+	}
 	if c.readErr != nil {
 		return nil, c.readErr
 	}
@@ -163,6 +184,12 @@ func (c *x11FocusTestConn) setReadErr(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.readErr = err
+}
+
+func (c *x11FocusTestConn) setBlockReads() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.blockReads = true
 }
 
 func x11FocusTestDialer(conns ...*x11FocusTestConn) func(string) (x11Conn, error) {
@@ -314,6 +341,24 @@ func TestX11SourceFollowsActiveWindow(t *testing.T) {
 	}
 }
 
+// x11FocusTestRecorded checks the recorded OnChange states (UpdatedAt
+// ignored) once the source has settled.
+func x11FocusTestRecorded(t *testing.T, rec *x11FocusTestRecorder, want ...X11State) {
+	t.Helper()
+	x11FocusTestSettle(rec)
+	got := rec.all()
+	ok := len(got) == len(want)
+	for i := 0; ok && i < len(got); i++ {
+		ok = x11FocusTestEqual(got[i], want[i])
+	}
+	if !ok {
+		t.Fatalf("OnChange states:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// The reconnect after a lost connection is quick in the tests (10 ms), so
+// the intermediate disconnect is checked in the recorded states rather than
+// by polling the snapshot.
 func TestX11SourceReconnectsOnEOF(t *testing.T) {
 	first := x11FocusTestTerminalConn()
 	second := x11FocusTestTerminalConn()
@@ -323,10 +368,73 @@ func TestX11SourceReconnectsOnEOF(t *testing.T) {
 	x11FocusTestWaitFor(t, s, "first connection", func(st X11State) bool { return st.Window == x11FocusTestTerminal })
 
 	first.Close() // the server went away
-	x11FocusTestExpect(t, s, "disconnected", X11State{Seq: 2})
 	x11FocusTestExpect(t, s, "reconnected", X11State{Connected: true, Window: x11FocusTestEditor, WmClass: "Gedit", Seq: 3})
-	if n := rec.count(); n != 3 {
-		t.Fatalf("OnChange called %d times, want 3 (connected, disconnected, reconnected)", n)
+	x11FocusTestRecorded(t, rec,
+		X11State{Connected: true, Window: x11FocusTestTerminal, AppID: "org.gnome.Terminal", WmClass: "Gnome-terminal", Seq: 1},
+		X11State{Seq: 2},
+		X11State{Connected: true, Window: x11FocusTestEditor, WmClass: "Gedit", Seq: 3},
+	)
+}
+
+func TestX11SourceConnectionLostDuringRead(t *testing.T) {
+	first := x11FocusTestTerminalConn()
+	second := x11FocusTestTerminalConn()
+	second.active = x11FocusTestEditor
+	rec := &x11FocusTestRecorder{}
+	s := x11FocusTestStart(t, x11FocusTestDialer(first, second), rec)
+	x11FocusTestWaitFor(t, s, "first connection", func(st X11State) bool { return st.Window == x11FocusTestTerminal })
+
+	// The server goes away while the source reads the new active window:
+	// the reply fails with io.EOF. That read publishes nothing (no
+	// "connected, no window" state); the session ends with one disconnect
+	// and the source reconnects.
+	first.setReadErr(fmt.Errorf("reply: %w", io.EOF))
+	first.setActive(x11FocusTestEditor)
+	x11FocusTestExpect(t, s, "reconnected", X11State{Connected: true, Window: x11FocusTestEditor, WmClass: "Gedit", Seq: 3})
+	x11FocusTestRecorded(t, rec,
+		X11State{Connected: true, Window: x11FocusTestTerminal, AppID: "org.gnome.Terminal", WmClass: "Gnome-terminal", Seq: 1},
+		X11State{Seq: 2},
+		X11State{Connected: true, Window: x11FocusTestEditor, WmClass: "Gedit", Seq: 3},
+	)
+	if !first.isClosed() {
+		t.Fatal("the dead connection was not closed")
+	}
+}
+
+func TestX11SourceShutdownDuringRead(t *testing.T) {
+	conn := x11FocusTestTerminalConn()
+	rec := &x11FocusTestRecorder{}
+	s := NewX11Source(X11Options{Display: ":99", OnChange: rec.onChange, Logf: t.Logf})
+	s.dial = x11FocusTestDialer(conn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	x11FocusTestWaitFor(t, s, "connected", func(st X11State) bool { return st.Connected })
+
+	// Close while a reply is outstanding: closing the connection fails the
+	// read with io.EOF, which must not be published as a state.
+	conn.setBlockReads()
+	conn.setActive(x11FocusTestEditor)
+	select {
+	case <-conn.readBlocked:
+	case <-time.After(focusTestWait):
+		t.Fatal("the source did not read the new active window")
+	}
+	start := time.Now()
+	s.Close()
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("Close took %v", elapsed)
+	}
+	select {
+	case <-s.done:
+	default:
+		t.Fatal("source goroutine still running after Close")
+	}
+	if n := rec.count(); n != 1 {
+		t.Fatalf("shutdown published %d extra changes: %+v", n-1, rec.all())
+	}
+	if st := s.Snapshot(); !st.Connected || st.Window != x11FocusTestTerminal || st.Seq != 1 {
+		t.Fatalf("state after the shutdown = %+v", st)
 	}
 }
 

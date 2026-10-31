@@ -3,10 +3,14 @@ package focus
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/xproto"
 )
 
 // Gated integration test against a live X display (GSWITCH_X11_TEST=1).
@@ -31,6 +35,7 @@ func TestX11SourceAgainstDisplay(t *testing.T) {
 		t.Fatalf("probe not connected: %+v", probe)
 	}
 	t.Logf("active window 0x%x, WM_CLASS %q, _GTK_APPLICATION_ID %q", probe.Window, probe.WmClass, probe.AppID)
+	x11FocusTestReadClients(t)
 
 	rec := &x11FocusTestRecorder{}
 	s := NewX11Source(X11Options{OnChange: rec.onChange, Logf: t.Logf})
@@ -63,5 +68,47 @@ func TestX11SourceAgainstDisplay(t *testing.T) {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("diagnostics lack %q", want)
 		}
+	}
+}
+
+// x11FocusTestReadClients runs the source's identity reads (WM_CLASS as
+// STRING, _GTK_APPLICATION_ID as UTF8_STRING, 256 units) on the managed
+// windows of _NET_CLIENT_LIST: the active window may have no WM_CLASS (on
+// the Fedora host's Xwayland it is a Mutter helper window), and under Xvfb
+// without a window manager the list is empty. A window closing meanwhile
+// (BadWindow) is skipped; any other error fails.
+func x11FocusTestReadClients(t *testing.T) {
+	t.Helper()
+	sess, err := openX11Session(x11Dial, "")
+	if err != nil {
+		t.Fatalf("open X11 session: %v", err)
+	}
+	defer sess.close()
+	atomClients, err := sess.conn.InternAtom("_NET_CLIENT_LIST")
+	if err != nil {
+		t.Fatalf("intern _NET_CLIENT_LIST: %v", err)
+	}
+	list, err := sess.conn.GetProperty(sess.root, atomClients, uint32(xproto.AtomWindow), x11PropertyMaxLen)
+	if err != nil {
+		t.Fatalf("read _NET_CLIENT_LIST: %v", err)
+	}
+	const maxClients = 16
+	for i := 0; i+4 <= len(list) && i < 4*maxClients; i += 4 {
+		window := xgb.Get32(list[i:])
+		wmClass, err := sess.conn.GetProperty(window, uint32(xproto.AtomWmClass), uint32(xproto.AtomString), x11PropertyMaxLen)
+		if errors.Is(err, errX11BadWindow) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read WM_CLASS of client 0x%x: %v", window, err)
+		}
+		appID, err := sess.conn.GetProperty(window, sess.atomGtkAppID, sess.atomUTF8, x11PropertyMaxLen)
+		if errors.Is(err, errX11BadWindow) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read _GTK_APPLICATION_ID of client 0x%x: %v", window, err)
+		}
+		t.Logf("client 0x%x: WM_CLASS class %q, _GTK_APPLICATION_ID %q", window, ParseWMClass(wmClass), x11String(appID))
 	}
 }

@@ -31,8 +31,11 @@ const (
 	x11RetryMax     = clientRetryMax
 	x11CloseTimeout = clientCloseTimeout
 	// x11PropertyMaxLen is the GetProperty length in 32-bit units for the
-	// window properties (1 KiB); the active-window read asks for one unit.
-	x11PropertyMaxLen = 256
+	// window properties WM_CLASS and _GTK_APPLICATION_ID (1 KiB);
+	// x11ActiveWindowLen is the one unit of the WINDOW value of
+	// _NET_ACTIVE_WINDOW.
+	x11PropertyMaxLen  = 256
+	x11ActiveWindowLen = 1
 
 	x11AtomNetActiveWindow  = "_NET_ACTIVE_WINDOW"
 	x11AtomGtkApplicationID = "_GTK_APPLICATION_ID"
@@ -213,7 +216,9 @@ func (s *X11Source) session(ctx context.Context) (connected, established bool, e
 	if err := sess.conn.SelectPropertyChanges(sess.root); err != nil {
 		return true, false, fmt.Errorf("select PropertyNotify on the root window: %w", err)
 	}
-	s.commit(s.read(sess))
+	if !s.publish(ctx, sess) {
+		return true, false, errX11Disconnected
+	}
 
 	for {
 		ev, err := sess.conn.NextPropertyNotify()
@@ -227,19 +232,28 @@ func (s *X11Source) session(ctx context.Context) (connected, established bool, e
 		if ev.Window != sess.root || ev.Atom != sess.atomActive {
 			continue
 		}
-		s.commit(s.read(sess))
+		if !s.publish(ctx, sess) {
+			return true, true, errX11Disconnected
+		}
 	}
 }
 
-// read is sess.read with the read error logged: the window identity is then
-// empty for this round, and a dead connection ends the session through the
-// event loop.
-func (s *X11Source) read(sess *x11Session) X11State {
+// publish reads the active window and commits the result. Any read error
+// other than a closed connection is logged and the window identity is empty
+// for this round. It reports false, publishing nothing, when the connection
+// closed during the read (server gone, or Close/ctx shutting the session
+// down): the caller ends the session, so a lost connection yields exactly one
+// Connected=false change and a shutdown none.
+func (s *X11Source) publish(ctx context.Context, sess *x11Session) bool {
 	st, err := sess.read()
 	if err != nil {
+		if errors.Is(err, io.EOF) || ctx.Err() != nil {
+			return false
+		}
 		s.logf("focus: x11: %v", err)
 	}
-	return st
+	s.commit(st)
+	return true
 }
 
 // onDisconnected resets the view after the connection was lost; the next
@@ -333,10 +347,12 @@ type x11Conn interface {
 	// SelectPropertyChanges subscribes this connection to PropertyNotify
 	// events of window.
 	SelectPropertyChanges(window uint32) error
-	// GetProperty reads property of window as typ. The value is empty when
-	// the property is absent or has another type; a window that no longer
-	// exists yields an error wrapping errX11BadWindow.
-	GetProperty(window, property, typ uint32) ([]byte, error)
+	// GetProperty reads at most length 32-bit units of property of window
+	// as typ. The value is empty when the property is absent or has another
+	// type; a window that no longer exists yields an error wrapping
+	// errX11BadWindow; a connection closed before the reply arrived yields
+	// an error wrapping io.EOF.
+	GetProperty(window, property, typ, length uint32) ([]byte, error)
 	// NextPropertyNotify blocks until the next PropertyNotify event. Other
 	// events are skipped; an X error delivered to the event queue is
 	// returned as is (the caller logs it and calls again); io.EOF reports
@@ -389,9 +405,10 @@ func (c *x11XGBConn) SelectPropertyChanges(window uint32) error {
 		xproto.CwEventMask, []uint32{xproto.EventMaskPropertyChange}).Check()
 }
 
-func (c *x11XGBConn) GetProperty(window, property, typ uint32) ([]byte, error) {
+func (c *x11XGBConn) GetProperty(window, property, typ, length uint32) ([]byte, error) {
+	// xgb's Reply returns io.EOF itself once the connection is closed.
 	reply, err := xproto.GetProperty(c.conn, false, xproto.Window(window),
-		xproto.Atom(property), xproto.Atom(typ), 0, x11PropertyMaxLen).Reply()
+		xproto.Atom(property), xproto.Atom(typ), 0, length).Reply()
 	if err != nil {
 		var bad xproto.WindowError
 		if errors.As(err, &bad) {
@@ -463,10 +480,11 @@ func (sess *x11Session) close() {
 
 // read returns the active window and its identity. A window that is gone
 // (BadWindow) is reported as no window. Any other read error is returned
-// together with the state known so far (Connected, empty identity).
+// together with the state known so far (Connected, empty identity); a closed
+// connection is an error wrapping io.EOF.
 func (sess *x11Session) read() (X11State, error) {
 	st := X11State{Connected: true}
-	value, err := sess.conn.GetProperty(sess.root, sess.atomActive, uint32(xproto.AtomWindow))
+	value, err := sess.conn.GetProperty(sess.root, sess.atomActive, uint32(xproto.AtomWindow), x11ActiveWindowLen)
 	if err != nil {
 		return st, fmt.Errorf("read %s: %w", x11AtomNetActiveWindow, err)
 	}
@@ -477,11 +495,11 @@ func (sess *x11Session) read() (X11State, error) {
 	if window == 0 {
 		return st, nil
 	}
-	wmClass, err := sess.conn.GetProperty(window, uint32(xproto.AtomWmClass), uint32(xproto.AtomString))
+	wmClass, err := sess.conn.GetProperty(window, uint32(xproto.AtomWmClass), uint32(xproto.AtomString), x11PropertyMaxLen)
 	if err != nil {
 		return st, x11WindowReadError("WM_CLASS", window, err)
 	}
-	appID, err := sess.conn.GetProperty(window, sess.atomGtkAppID, sess.atomUTF8)
+	appID, err := sess.conn.GetProperty(window, sess.atomGtkAppID, sess.atomUTF8, x11PropertyMaxLen)
 	if err != nil {
 		return st, x11WindowReadError(x11AtomGtkApplicationID, window, err)
 	}
