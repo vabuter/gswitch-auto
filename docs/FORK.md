@@ -256,6 +256,10 @@ gnome-extensions disable gswitch-focus@vabuter.github.io   # по желанию
 
 ### Debian 12 (GNOME 43 на Xorg)
 
+Сборка прямо на Debian-машине (Go 1.26 с go.dev, `scripts/build-deb.sh --no-container`) и
+установка с помощью ИИ-агента: [INSTALL-DEBIAN.md](INSTALL-DEBIAN.md),
+[AGENT-INSTALL-DEBIAN.md](AGENT-INSTALL-DEBIAN.md). Ниже — сборка на Fedora-хосте в podman.
+
 ```bash
 make deb                                            # на Fedora-хосте, через podman
 scp dist/gswitch-auto_*_amd64.deb debian:           # перенести на машину

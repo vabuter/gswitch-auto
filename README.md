@@ -83,6 +83,10 @@ sudo apt install ./dist/gswitch-auto_*_amd64.deb   # replaces the upstream gswit
 systemctl --user enable --now gswitch.service # if the unit is not enabled afterwards
 ```
 
+To build on the Debian machine itself (Go 1.26 from go.dev, no container), see
+[docs/INSTALL-DEBIAN.md](docs/INSTALL-DEBIAN.md) (Russian) and the agent runbook
+[docs/AGENT-INSTALL-DEBIAN.md](docs/AGENT-INSTALL-DEBIAN.md).
+
 Both packages provide `gswitch`, replace the upstream package (the RPM
 obsoletes `gswitch < 0.9`, the `.deb` declares `Conflicts`/`Replaces`
 `gswitch`) and keep the binary names and file paths, so they replace an
@@ -227,8 +231,9 @@ automatic mode off instead.
 
 ### X11 notes
 
-Tested on Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
-`GTK_IM_MODULE=ibus`. What differs from the Wayland target:
+Targets Debian 12 with GNOME Shell 43.9 on Xorg, IBus 1.5.27 and
+`GTK_IM_MODULE=ibus` (the package and the diagnostics are tested in Debian 12
+containers). What differs from the Wayland target:
 
 - **Layout.** GNOME Shell below 49.3 sets the IBus engine to `xkb:us::eng`
   for every XKB layout (`ibus engine` prints it in both layouts), so the IBus

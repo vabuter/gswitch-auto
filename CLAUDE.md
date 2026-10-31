@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this folder is
 
+**On the Debian 12 machine** (`/etc/debian_version` exists): the host facts below describe the
+Fedora development host and do not apply there. To install the fork on Debian, follow
+`docs/AGENT-INSTALL-DEBIAN.md` (native `.deb` build with `scripts/build-deb.sh --no-container`).
+
 The git repository of **gswitch-auto**, a fork of **gswitch** (Go, MIT,
 github.com/arumata/gswitch) that adds automatic wrong-layout correction (Punto
 Switcher-like) for the user's two machines: this host (Fedora 44, GNOME Shell 50, Wayland,
