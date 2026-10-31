@@ -82,6 +82,14 @@ read the focused application id, the same scope as GNOME's portals.
   focused `Main.inputMethod` stands in for that `focus-in`. Without IBus,
   `Main.inputMethod` `notify::content-purpose` is the fallback. Enum values
   are looked up in the IBus/Clutter typelibs at run time.
+- IBus loss: when the IBus connection drops (`ibus restart`, ibus-setup, a
+  crashed ibus-daemon) the IBus manager emits only `ready(false)`, no
+  `focus-out`. The extension then sets `unknown` and forgets the focused
+  input context, so the previous field's purpose (`normal` from an editor)
+  cannot carry over to a field that never focuses IBus, such as a GTK
+  password entry on X11; strict mode denies `unknown`. `ready(true)` changes
+  nothing: the next `focus-in` and `set-content-type` report the real
+  purpose. Both trees connect `ready`.
 - Secret fields: a field whose content hints include `HIDDEN_TEXT` or
   `PRIVATE` (IBus; Clutter `HIDDEN_TEXT` or `SENSITIVE_DATA`) is reported as
   `password` unless it already reports `password` or `pin`. Qt 6 on Wayland

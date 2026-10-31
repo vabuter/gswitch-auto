@@ -263,6 +263,130 @@ console.log('ok');
 	}
 }
 
+// legacyExtTestJSMethod extracts a method of the FocusReporter class (four
+// spaces of indentation) from script.
+func legacyExtTestJSMethod(t *testing.T, script, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?ms)^    ` + name + `\([^)\n]*\) \{\n.*?^    \}$`).FindString(script)
+	if m == "" {
+		t.Fatalf("extension.js has no FocusReporter method %s", name)
+	}
+	return m
+}
+
+// legacyExtTestReadyWiring: per tree, the IBusManager 'ready' connection and
+// how destroy() releases it (connectObject/disconnectObject in the ESM tree,
+// a stored id in _ibusIds in the legacy tree).
+var legacyExtTestReadyWiring = map[string][]*regexp.Regexp{
+	"esm": {
+		regexp.MustCompile(`(?s)getIBusManager\(\)\.connectObject\([^;]*\n            'ready', \(_manager, ready\) => this\._onIBusReady\(ready\),\n            this\);`),
+		regexp.MustCompile(`(?m)^        getIBusManager\(\)\.disconnectObject\(this\);$`),
+	},
+	"legacy": {
+		regexp.MustCompile(`(?s)this\._ibusIds = \[[^\]]*\n            ibusManager\.connect\('ready', \(_manager, ready\) => this\._onIBusReady\(ready\)\),\n        \];`),
+		regexp.MustCompile(`(?m)^        for \(const id of this\._ibusIds\)\n            ibusManager\.disconnect\(id\);$`),
+	},
+}
+
+// TestExtensionResetsPurposeOnIBusLoss (SPEC-X11 §3.6, rev. 3): a lost IBus
+// connection is reported by gnome-shell's IBusManager only as 'ready'(false),
+// never as 'focus-out' (F19), so both trees connect 'ready' and reset the
+// purpose to "unknown" (denied in strict mode) instead of keeping the last
+// field's purpose. The reporter's real purpose methods run under node against
+// a fake D-Bus object, for both trees.
+func TestExtensionResetsPurposeOnIBusLoss(t *testing.T) {
+	node, nodeErr := exec.LookPath("node")
+	methods := map[string]string{}
+	for _, tree := range legacyExtTestTrees() {
+		t.Run(tree.name, func(t *testing.T) {
+			script := legacyExtTestRead(t, filepath.Join(tree.dir, "extension.js"))
+			if !strings.Contains(script, "'ready'") {
+				t.Fatalf("extension.js does not connect IBusManager 'ready'")
+			}
+			for _, re := range legacyExtTestReadyWiring[tree.name] {
+				if !re.MatchString(script) {
+					t.Errorf("extension.js does not match %s", re)
+				}
+			}
+			ready := legacyExtTestJSMethod(t, script, "_onIBusReady")
+			for _, want := range []string{"this._imFocused = false;", "this._setPurpose('unknown');"} {
+				if !strings.Contains(ready, want) {
+					t.Errorf("_onIBusReady does not contain %s:\n%s", want, ready)
+				}
+			}
+			methods[tree.name] = ready
+
+			if nodeErr != nil {
+				t.Skip("node not available")
+			}
+			var proto []string
+			for _, name := range []string{"_onIBusFocusIn", "_onIBusFocusOut", "_onIBusReady", "_onIBusContentType", "_setPurpose"} {
+				proto = append(proto, legacyExtTestJSMethod(t, script, name))
+			}
+			program := focusTestJSFunction(t, script, "securePurpose") + "\n" +
+				focusTestJSFunction(t, script, "purposeTable") + "\n" +
+				legacyExtTestJSConst(t, script, "IBUS_PURPOSE_NAMES") + `
+const GLib = {Variant: class { constructor(type, value) { this.value = value; } }};
+const Main = {inputMethod: {currentFocus: null}};
+const emitted = [];
+const proto = {
+` + strings.Join(proto, ",\n") + `
+};
+const r = Object.create(proto);
+Object.assign(r, {
+    _ibusPurposes: purposeTable({FREE_FORM: 0, PASSWORD: 8}, IBUS_PURPOSE_NAMES),
+    _ibusSecretHints: 0,
+    _imFocused: false,
+    _ibusSeen: false,
+    _purpose: 'unknown',
+    _dbusImpl: {
+        emit_property_changed(name, v) { emitted.push('prop ' + name + '=' + v.value); },
+        emit_signal(name, v) { emitted.push('signal ' + name + JSON.stringify(v.value)); },
+    },
+});
+const step = (label, fn) => { fn(); emitted.push(label + ': ' + r._purpose + ' focused=' + r._imFocused); };
+step('gedit', () => { r._onIBusFocusIn(); r._onIBusContentType(0, 0); });
+step('ibus lost', () => r._onIBusReady(false));
+step('stray content type', () => r._onIBusContentType(0, 0));
+step('ibus back', () => r._onIBusReady(true));
+step('password', () => { r._onIBusFocusIn(); r._onIBusContentType(8, 0); });
+step('ibus lost again', () => r._onIBusReady(false));
+step('ibus still lost', () => r._onIBusReady(false));
+console.log(emitted.join('\n'));
+`
+			want := strings.Join([]string{
+				"prop InputPurpose=normal",
+				`signal InputPurposeChanged["normal"]`,
+				"gedit: normal focused=true",
+				"prop InputPurpose=unknown",
+				`signal InputPurposeChanged["unknown"]`,
+				"ibus lost: unknown focused=false",
+				"stray content type: unknown focused=false",
+				"ibus back: unknown focused=false",
+				"prop InputPurpose=password",
+				`signal InputPurposeChanged["password"]`,
+				"password: password focused=true",
+				"prop InputPurpose=unknown",
+				`signal InputPurposeChanged["unknown"]`,
+				"ibus lost again: unknown focused=false",
+				"ibus still lost: unknown focused=false",
+			}, "\n")
+			out, err := exec.Command(node, "-e", program).CombinedOutput()
+			if err != nil {
+				t.Fatalf("node: %v\n%s", err, out)
+			}
+			if got := strings.TrimSpace(string(out)); got != want {
+				t.Fatalf("purpose sequence:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+	// The handler lives in the class, outside the helpers check-extension.sh
+	// compares, so its equality is checked here.
+	if methods["esm"] != "" && methods["esm"] != methods["legacy"] {
+		t.Errorf("_onIBusReady differs between the ESM and legacy trees:\n--- esm\n%s\n--- legacy\n%s", methods["esm"], methods["legacy"])
+	}
+}
+
 // TestCheckExtensionScript runs scripts/check-extension.sh, which repeats the
 // checks above from the packaging side (nfpm.yaml entries, node --check of
 // both module formats). --strict (node required) applies in CI.
