@@ -266,13 +266,21 @@ for tool in go gcc dpkg-deb dpkg lintian sha256sum python3 find cmp diff awk tar
     command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
 done
 if ((${#missing_tools[@]} > 0)); then
-    die "missing tools: ${missing_tools[*]} (Debian: apt install golang-go gcc dpkg-dev lintian python3 diffutils; or drop --no-container to build inside the podman image)"
+    die "missing tools: ${missing_tools[*]} (Debian: apt install gcc dpkg-dev lintian python3 diffutils, plus the Go toolchain of go.mod, which bookworm's golang-go 1.19 is not; or drop --no-container to build inside the podman image)"
 fi
 
 [[ -f $nfpm_yaml ]] || die "$nfpm_yaml not found"
 
 goarch=$(go env GOARCH)
 [[ $goarch == amd64 ]] || die "only amd64 is packaged ($nfpm_yaml arch: amd64); this machine builds $goarch"
+
+# In a container the checkout belongs to another user (the host user under
+# podman without keep-id, the runner user in a CI container job), which git
+# treats as "dubious" without this. It runs first, before scripts/version.sh
+# reads the tags; never touch the global git config outside a container.
+if [[ -f /run/.containerenv || -f /.dockerenv ]] && command -v git >/dev/null 2>&1; then
+    git config --global --add safe.directory "$repo_root" 2>/dev/null || true
+fi
 
 resolve_version
 check_sources
@@ -294,11 +302,6 @@ printf 'nfpm: %s\n' "${nfpm_cmd[*]}"
 # a worktree whose git directory is outside the mount, so never stamp VCS
 # information into the binaries.
 export GOFLAGS=${GOFLAGS:--buildvcs=false}
-# Inside the container the checkout is owned by the host user, which git
-# treats as "dubious" without this (never touch the global config elsewhere).
-if [[ -f /run/.containerenv || -f /.dockerenv ]] && command -v git >/dev/null 2>&1; then
-    git config --global --add safe.directory "$repo_root" 2>/dev/null || true
-fi
 
 step "Version rules (dpkg)"
 GSWITCH_VERSION=$version scripts/version.sh --verify-deb
@@ -421,10 +424,11 @@ expect "Replaces gswitch" test "$(field Replaces)" = gswitch
 expect "Conflicts gswitch" test "$(field Conflicts)" = gswitch
 
 listing=$(dpkg-deb -c "$deb_file")
-# entry_mode PATH: the mode column of ./PATH in the data archive, "" when
-# absent (directories are listed with a trailing slash).
+# entry_mode PATH: the mode column of the absolute PATH in the data archive,
+# "" when absent. dpkg-deb -c lists members as ./usr/bin/gswitch, directories
+# with a trailing slash.
 entry_mode() {
-    awk -v p="./$1" '$NF == p || $NF == p "/" { print $1; exit }' <<<"$listing"
+    awk -v p="./${1#/}" '$NF == p || $NF == p "/" { print $1; exit }' <<<"$listing"
 }
 # expect_entry PATH MODE: PATH is packaged with the symbolic MODE.
 expect_entry() {
