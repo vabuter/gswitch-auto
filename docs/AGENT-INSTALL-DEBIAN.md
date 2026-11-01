@@ -69,6 +69,9 @@ install/rollback notes in [FORK.md](FORK.md) («Debian 12»).
   (`mkdir -p ~/.cache/gswitch-auto-build` first), and after each step a line `STEP <n> DONE` or
   `STOPPED: <reason>`. If the log exists when you start, read it first and resume after the last
   `STEP <n> DONE`; restore anything a half-done manual-script step left changed (step 9).
+- **Messages.** The user's locale may be Russian. The texts quoted under *Expect* are the
+  English ones; the commands whose output is compared set `LC_ALL=C.UTF-8` for that reason. If
+  you run anything else, compare values, not translated wording.
 - **Stop conditions.** When a check below says *stop*, do not improvise a workaround that changes
   the system: tell the user what failed, show the evidence, and propose the next step.
 
@@ -199,9 +202,10 @@ echo "exit=$?"
 ```
 
 Expect `exit=0` and nothing else; the verified archive's path is in `$B/dl/selected`. The download
-goes to a `.part` file that is renamed only after the sha256 matched, so an interrupted run is
-simply run again. A non-zero exit after a complete run (network error, sha256 mismatch) is a
-*stop*. Then unpack it (the archive's top directory is `go/`):
+goes to a `.part` file that is renamed only after the sha256 matched, so an interrupted or failed
+run is simply run again: a network error (a traceback ending in `URLError` or `TimeoutError`; a
+TLS handshake timeout happened once in testing) gets one more run; a second network failure or a
+`sha256 mismatch` is a *stop*. Then unpack it (the archive's top directory is `go/`):
 
 ```bash
 B=~/.cache/gswitch-auto-build; if [ -e "$B/go" ]; then echo "exists: $B/go"; else tar -C "$B" -xzf "$(cat "$B/dl/selected")" && echo unpacked; fi
@@ -228,7 +232,10 @@ checksum verification. Run it in the background:
 B=~/.cache/gswitch-auto-build; mkdir -p "$B/home" && env -i HOME="$B/home" PATH="$B/go/bin:/usr/bin:/bin" ${https_proxy:+"https_proxy=$https_proxy"} ${HTTPS_PROXY:+"HTTPS_PROXY=$HTTPS_PROXY"} ${no_proxy:+"no_proxy=$no_proxy"} ${NO_PROXY:+"NO_PROXY=$NO_PROXY"} GOTOOLCHAIN=local GOPATH="$B/gopath" GOMODCACHE="$B/gopath/pkg/mod" GOCACHE="$B/gocache" GOBIN="$B/bin" "$B/go/bin/go" install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0 >"$B/nfpm-install.log" 2>&1; echo "exit=$?"
 ```
 
-Expect `exit=0`; otherwise stop and report `tail -n 40` of `$B/nfpm-install.log`. Check:
+Expect `exit=0`. A failed module download (`dial tcp`, `TLS handshake timeout`, `i/o timeout` in
+the log) gets one more run of the same command; any other failure, or a second one, is a *stop*:
+report `tail -n 40` of `$B/nfpm-install.log`. A `SECURITY ERROR` / `checksum mismatch` is always a
+*stop*. Check:
 
 ```bash
 B=~/.cache/gswitch-auto-build; env -i HOME="$B/home" GOTOOLCHAIN=local "$B/go/bin/go" version -m "$B/bin/nfpm" | awk '$1 == "mod" {print $2, $3, $4}'
@@ -253,7 +260,7 @@ B=~/.cache/gswitch-auto-build; R=~/p/gswitch-auto; mkdir -p "$B/home" && (cd "$R
 Expect `exit=0`. Then:
 
 ```bash
-B=~/.cache/gswitch-auto-build; R=~/p/gswitch-auto; grep -c -e '--- FAIL' -e '^FAIL' "$B/build-deb.log"; grep -E '^(E|W): ' "$B/build-deb.log" | sed -E 's/ \[.*//' | sort | uniq -c; tail -n 5 "$B/build-deb.log"; (cd "$R/dist" && sha256sum -c checksums-deb.txt); deb="$R/dist/$(awk '{print $2}' "$R/dist/checksums-deb.txt")"; dpkg-deb -f "$deb" Package Version Depends Recommends Provides Replaces Conflicts
+B=~/.cache/gswitch-auto-build; R=~/p/gswitch-auto; export LC_ALL=C.UTF-8; grep -c -e '--- FAIL' -e '^FAIL' "$B/build-deb.log"; grep -E '^(E|W): ' "$B/build-deb.log" | sed -E 's/ \[.*//' | sort | uniq -c; tail -n 5 "$B/build-deb.log"; (cd "$R/dist" && sha256sum -c checksums-deb.txt); deb="$R/dist/$(awk '{print $2}' "$R/dist/checksums-deb.txt")"; dpkg-deb -f "$deb" Package Version Depends Recommends Provides Replaces Conflicts
 ```
 
 Expect:
@@ -265,7 +272,8 @@ Expect:
 - the log ends with `ok    lintian reports no errors (warnings and info tags above are advisory)`,
   `==> Done`, `wrote …/dist/gswitch-auto_<V>-1_amd64.deb and …/dist/checksums-deb.txt` and the
   sha256 line;
-- `gswitch-auto_<V>-1_amd64.deb: OK`;
+- `gswitch-auto_<V>-1_amd64.deb: OK` (`LC_ALL` matters: under a Russian locale `sha256sum` prints
+  `ЦЕЛ`);
 - `Package: gswitch-auto`, `Version: <V>-1`, `Provides: gswitch (= <V>-1)`, `Replaces: gswitch`,
   `Conflicts: gswitch`.
 
@@ -281,7 +289,7 @@ split the build into your own `go`/`make` calls (§0).
 
 Alternatives, only if the user prefers them: (a) the user copies a `.deb` built on the Fedora host
 (`make deb`) together with its `checksums-deb.txt` into `~/p/gswitch-auto/dist/`
-(`mkdir -p` it first) — verify with `R=~/p/gswitch-auto; (cd "$R/dist" && sha256sum -c checksums-deb.txt)`
+(`mkdir -p` it first) — verify with `R=~/p/gswitch-auto; (cd "$R/dist" && LC_ALL=C.UTF-8 sha256sum -c checksums-deb.txt)` ⇒ `OK`
 and continue at step 6; (b) the container build: the user runs `sudo apt install podman`, then
 `scripts/build-deb.sh` without `--no-container` from the repository root (not tested with
 Debian 12's podman 4.3).
@@ -337,7 +345,7 @@ echo "== dbus"; for p in LayoutSource AutoEnabled AutoAvailable AutoUnavailableR
 | switch keys | the baseline plus `'XF86Launch7'` and `'<Shift>XF86Launch7'` (SPEC-X11 F9, F21) |
 | layout state | `Session: x11 (…)`, `GNOME Shell: 43.9`, `Daemon selection: layout sources: x11 (GNOME Shell 43.9); …`, `Layout table: us,ru,…` (GNOME 43 appends the locale's layout: `us,ru,us` or `us,ru,ru`), `Mapped: layout us = index 0 …` (or `ru = index 1` in the ru layout) |
 | focus state | `Extension: absent (org.gnome.Shell.Extensions.GswitchFocus not owned)`; `X11: connected, active window 0x…, WM_CLASS "<this terminal's class>" …`; `Policy: denied (focus-unavailable)` |
-| dbus | `LayoutSource => s "x11"`, `AutoEnabled => b false` (off by default), `AutoAvailable => b false`, `AutoUnavailableReason => s "focus-extension-required"` (strict mode until the extension runs, step 8), `FocusSource => s "x11"` |
+| dbus | `LayoutSource => s "x11"`, `AutoEnabled => b false` (off by default; `b true` if an earlier fork install left auto mode on), `AutoAvailable => b false`, `AutoUnavailableReason => s "focus-extension-required"` (strict mode until the extension runs, step 8), `FocusSource => s "x11"` |
 
 If the service is `disabled` and upstream gswitch was **not** installed before (fresh install —
 the package enables the unit only when it replaces upstream), enable it (user-level, no root):
@@ -360,8 +368,8 @@ report it.
    them to resume afterwards with `cd ~/p/gswitch-auto && claude --continue` (the log has the step
    markers).
 2. `LC_ALL=C.UTF-8 gnome-extensions info gswitch-focus@vabuter.github.io` (`LC_ALL` keeps the
-   labels English under a Russian locale). GNOME 43/44 print
-   `State: ENABLED` for a running extension (GNOME 45+ print `ACTIVE`). If the state is
+   labels English under a Russian locale). GNOME 43/44 print `State: ENABLED` for a running
+   extension (GNOME 45+ print `ACTIVE`). If the state is
    `INITIALIZED` or `DISABLED`, run `gnome-extensions enable gswitch-focus@vabuter.github.io` and
    check again ⇒ `State: ENABLED`. `Extension “gswitch-focus@vabuter.github.io” doesn't exist`
    (exit code 2) ⇒ the Shell was not restarted yet. `ERROR` or `OUT OF DATE` ⇒ stop and report

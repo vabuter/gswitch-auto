@@ -77,7 +77,8 @@ make deb
 scp dist/"$(awk '{print $2}' dist/checksums-deb.txt)" dist/checksums-deb.txt <debian>:
 ```
 
-и на Debian проверить контрольную сумму (из домашнего каталога):
+и на Debian проверить контрольную сумму (из домашнего каталога; ожидается `OK`, в русской локали
+`ЦЕЛ`):
 
 ```bash
 sha256sum -c checksums-deb.txt
