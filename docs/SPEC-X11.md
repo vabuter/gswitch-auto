@@ -1550,10 +1550,10 @@ the foreground; gedit or gnome-text-editor as the test field; a terminal (gnome-
   disabled for GNOME Shell 43.9 (forced for this run). With `layout-source=ibus` in
   `~/.config/gswitch/auto.conf` and a daemon restart the start log shows the refusal warning of
   §2.1 and `AutoUnavailableReason` ⇒ `"layout-source-unsupported"`; restore `auto` and restart.
-- **MX4 Extension.** Log out and in (or Alt+F2, `r`, Enter). `LC_ALL=C.UTF-8 gnome-extensions
-  info gswitch-focus@vabuter.github.io` ⇒ `State: ENABLED` (GNOME 43/44; 45+ print `ACTIVE`; a
-  new extension shows `INITIALIZED` or `DISABLED` until it is enabled from the tray settings or
-  with `gnome-extensions enable …`); the installed file is the legacy variant (`grep -c 'function
+- **MX4 Extension.** Log out and in (or Alt+F2, `r`, Enter). `LC_ALL=C.UTF-8 LANGUAGE=
+  gnome-extensions info gswitch-focus@vabuter.github.io` ⇒ `State: ENABLED` (GNOME 43/44; 45+
+  print `ACTIVE`; a new extension shows `INITIALIZED` or `DISABLED` until it is enabled from the
+  tray settings or with `gnome-extensions enable …`); the installed file is the legacy variant (`grep -c 'function
   init' /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js` ⇒ 1).
   `gdbus call --session --dest org.gnome.Shell.Extensions.GswitchFocus --object-path
   /org/gnome/Shell/Extensions/GswitchFocus --method org.gnome.Shell.Extensions.GswitchFocus.GetFocus`

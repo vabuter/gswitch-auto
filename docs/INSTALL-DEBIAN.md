@@ -16,6 +16,8 @@ Wayland с GNOME 43 автоисправление не работает. Про
    sudo apt install git
    ```
 
+   (если sudo не настроен — `su -c 'apt install git'` с паролем root.)
+
    Склонировать репозиторий **полностью** (не `--depth 1`: сборке нужен тег `v0.8.0`):
 
    ```bash
@@ -51,6 +53,8 @@ Wayland с GNOME 43 автоисправление не работает. Про
 
 ## Вариант 2. Вручную
 
+Если sudo не настроен, команды с `sudo` ниже выполняйте как `su -c '…'`.
+
 Сборка на самой машине. Пакеты для сборки:
 
 ```bash
@@ -61,9 +65,10 @@ sudo apt update
 sudo apt install --no-install-recommends gcc libc6-dev pkg-config libgtk-3-dev libx11-dev libxkbcommon-dev dpkg-dev fakeroot lintian python3 git ca-certificates
 ```
 
-Go 1.26 и nfpm ставятся в `~/.cache/gswitch-auto-build` командами из шагов 3–4
-[инструкции для агента](AGENT-INSTALL-DEBIAN.md#3-go-toolchain-no-root-minutes), сборка — командой
-из шага 5 (выполнять из любого каталога: команды сами переходят в `~/p/gswitch-auto`). Результат:
+Go 1.26, nfpm и модули Go скачиваются в `~/.cache/gswitch-auto-build` командами из шагов 3–4
+[инструкции для агента](AGENT-INSTALL-DEBIAN.md#3-go-toolchain-no-root-minutes) (сетевую ошибку,
+например таймаут TLS, лечит повторный запуск той же команды), сборка — командой из шага 5 (сеть ей
+уже не нужна; выполнять из любого каталога: команды сами переходят в `~/p/gswitch-auto`). Результат:
 `~/p/gswitch-auto/dist/gswitch-auto_<V>-1_amd64.deb` и `dist/checksums-deb.txt` (в
 `checksums-deb.txt` — имя последнего собранного пакета).
 
@@ -131,7 +136,9 @@ sha256sum -c checksums-deb.txt
    gnome-extensions enable ubuntu-appindicators@ubuntu.com
    ```
 
-   Состояние смотрится через `gnome-extensions info <uuid>`: GNOME 43 пишет `State: ENABLED`.
+   Состояние смотрится через `gnome-extensions info <uuid>`: у работающего расширения GNOME 43
+   показывает `ENABLED`. Если `gnome-extensions` молча завершается с ошибкой, не хватает пакета
+   `gjs` (`sudo apt install gjs`).
 
 5. Запустить трей (после следующего входа он стартует сам):
 
@@ -139,8 +146,9 @@ sha256sum -c checksums-deb.txt
    gio launch /usr/share/applications/gswitch-tray.desktop
    ```
 
-6. Включить автоисправление (левый Shift + правый Shift) и в gedit набрать `ghbdtn` и пробел —
-   должно получиться `привет`. Если исправлений нет нигде, проверить, что стоят модули IBus для
+6. Включить автоисправление (левый Shift + правый Shift) и в gedit (`sudo apt install gedit`, если
+   его нет) или в «Текстовом редакторе» (gnome-text-editor) набрать `ghbdtn` и пробел — должно
+   получиться `привет`. Если исправлений нет нигде, проверить, что стоят модули IBus для
    GTK (`sudo apt install ibus-gtk3 ibus-gtk4`, затем перезапустить программы).
 
 Если что-то не так, вывод этих команд покажет, в чём дело:
