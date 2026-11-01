@@ -5,8 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this folder is
 
 **On the Debian 12 machine** (`/etc/debian_version` exists): the host facts below describe the
-Fedora development host and do not apply there. To install the fork on Debian, follow
-`docs/AGENT-INSTALL-DEBIAN.md` (native `.deb` build with `scripts/build-deb.sh --no-container`).
+Fedora development host and do not apply there, and neither do the build and test commands of
+"Building the fork" (`make test`, `go test ./...`, …): they would run the tests against the live
+session. To install the fork on Debian, follow `docs/AGENT-INSTALL-DEBIAN.md` (native `.deb`
+build with `scripts/build-deb.sh --no-container` in a clean environment, its step 5).
 
 The git repository of **gswitch-auto**, a fork of **gswitch** (Go, MIT,
 github.com/arumata/gswitch) that adds automatic wrong-layout correction (Punto

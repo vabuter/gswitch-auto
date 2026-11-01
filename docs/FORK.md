@@ -262,7 +262,7 @@ gnome-extensions disable gswitch-focus@vabuter.github.io   # по желанию
 
 ```bash
 make deb                                            # на Fedora-хосте, через podman
-scp dist/gswitch-auto_*_amd64.deb debian:           # перенести на машину
+scp dist/"$(awk '{print $2}' dist/checksums-deb.txt)" debian:   # последний собранный .deb
 sudo apt install ./gswitch-auto_<V>-1_amd64.deb     # заменит upstream gswitch (.deb)
 dpkg -s gswitch                                     # not installed / config-files
 gswitch --version                                   # gswitch version <V>
@@ -305,8 +305,11 @@ journalctl --user -u gswitch.service -b | grep 'layout sources'
   io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto io.github.vabuter.GswitchAuto
   FocusSuppressedReason` (`excluded-app` в xterm — XIM-клиент сообщает `normal`, F22;
   `purpose-unknown` в GTK3-поле пароля — это норма, F8).
-- Откат: `sudo apt install ./gswitch_0.8.0_linux_amd64.deb` (если deb upstream сохранён) или
-  `sudo apt remove gswitch-auto`, затем `systemctl --user enable --now gswitch.service`.
+- Откат: `sudo apt remove gswitch-auto` (`purge` удалит и `/etc/gswitch`); если стоял upstream и
+  его `.deb` сохранён — затем `sudo apt install ./gswitch_0.8.0_linux_amd64.deb` и
+  `systemctl --user enable --now gswitch.service` (после одного `apt remove` unit удалён вместе с
+  пакетом, включать нечего). Каталог сборки на машине: `chmod -R u+w ~/.cache/gswitch-auto-build
+  && rm -rf ~/.cache/gswitch-auto-build` (кэш модулей Go только для чтения).
 - Интеграционные тесты X11 (только чтение): `GSWITCH_X11_TEST=1 go test
   ./internal/gswitch/layoutstate/ ./internal/gswitch/focus/ -run X11 -v` против `$DISPLAY`
   (на хосте — Xwayland `:0`). Вариант с переключением группы (`GSWITCH_X11_TEST_SWITCH=1`)

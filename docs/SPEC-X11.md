@@ -1550,9 +1550,10 @@ the foreground; gedit or gnome-text-editor as the test field; a terminal (gnome-
   disabled for GNOME Shell 43.9 (forced for this run). With `layout-source=ibus` in
   `~/.config/gswitch/auto.conf` and a daemon restart the start log shows the refusal warning of
   §2.1 and `AutoUnavailableReason` ⇒ `"layout-source-unsupported"`; restore `auto` and restart.
-- **MX4 Extension.** Log out and in (or Alt+F2, `r`, Enter). `gnome-extensions info
-  gswitch-focus@vabuter.github.io` ⇒ `State: ACTIVE` (else enable from the tray settings or
-  `gnome-extensions enable …`); the installed file is the legacy variant (`grep -c 'function
+- **MX4 Extension.** Log out and in (or Alt+F2, `r`, Enter). `LC_ALL=C.UTF-8 gnome-extensions
+  info gswitch-focus@vabuter.github.io` ⇒ `State: ENABLED` (GNOME 43/44; 45+ print `ACTIVE`; a
+  new extension shows `INITIALIZED` or `DISABLED` until it is enabled from the tray settings or
+  with `gnome-extensions enable …`); the installed file is the legacy variant (`grep -c 'function
   init' /usr/share/gnome-shell/extensions/gswitch-focus@vabuter.github.io/extension.js` ⇒ 1).
   `gdbus call --session --dest org.gnome.Shell.Extensions.GswitchFocus --object-path
   /org/gnome/Shell/Extensions/GswitchFocus --method org.gnome.Shell.Extensions.GswitchFocus.GetFocus`
@@ -1576,8 +1577,8 @@ the foreground; gedit or gnome-text-editor as the test field; a terminal (gnome-
   `busctl … FocusSource` ⇒ `"active"`.
 - **MX6 Auto-correction.** Toggle auto on (LShift+RShift; tray shows on). In gedit, layout us:
   `ghbdtn ` ⇒ `привет ` and the layout indicator shows ru; `руддщ ` (ru) ⇒ `hello `; `hello `
-  unchanged; `ghbdtn` + Enter unchanged; `GTK ` unchanged; `ghbdtn? ` ⇒ `привет, `. Double-Shift
-  right after a fix undoes it. *(debug)* one `auto:` line per Space (`arm`/`fire`/`skip
+  unchanged; `ghbdtn` + Enter unchanged; `GTK ` unchanged; `ghbdtn? ` ⇒ `привет, `. (No undo
+  here: undo teaches the word, (d).) *(debug)* one `auto:` line per Space (`arm`/`fire`/`skip
   reason=…`). Layout switches (K-X1): (a) a mid-word switch the daemon cannot see — in a
   terminal run `sleep 4; xdotool key super+space` (XTEST events never pass through evdev),
   focus gedit (layout us), type `ghbd`, wait until the indicator shows ru, type `tn ` ⇒ no
@@ -1593,9 +1594,14 @@ the foreground; gedit or gnome-text-editor as the test field; a terminal (gnome-
   running, type `ghbdtn `, and as soon as the fix appears type `rfr ltkf ` at normal speed ⇒
   the screen shows `привет как дела ` with no letter missing, the input-source popup never
   appears, and the time from the Space to the fixed text is the hold-off plus at most
-  ~100 ms (never ~1.5 s; `auto: arm` → `auto: fire` in the debug log). Double-Shift right
-  after a fix undoes it as fast. A fix that skips with `input-pending` because a key was
-  still down is the documented safe direction, not a failure.
+  ~100 ms (never ~1.5 s; `auto: arm` → `auto: fire` in the debug log). A fix that skips with
+  `input-pending` because a key was still down is the documented safe direction, not a failure.
+  (d) Undo, last because it changes the word list: `ntcn ` ⇒ `тест `, double Shift right after
+  the fix ⇒ `ntcn ` and the layout back, as fast as the fix. With the defaults (`auto-learn-on-undo`,
+  count 1) `ntcn` is now an exception word (`grep -x ntcn ~/.config/gswitch/exceptions-words.txt`
+  once the tray has saved it); remove it under Settings → Auto correction → Exception words.
+  Undoing a `ghbdtn` fix instead would make it an exception, and MX8/MX9, which reuse `ghbdtn`,
+  would then pass without testing anything.
 - **MX7 Strict mode.** In `xterm` type `ghbdtn ` ⇒ **no** correction; `busctl … FocusSuppressedReason`
   (run inside xterm) ⇒ `"excluded-app"` (rev. 4: xterm is an XIM client and reports `normal`,
   F22, so strict mode alone would allow it; the exclusion template that the tray seeds,

@@ -79,7 +79,7 @@ Debian 12 (`.deb`, GNOME on Xorg):
 
 ```bash
 make deb                                      # builds inside a podman image (Debian 12 has no Go 1.25+)
-sudo apt install ./dist/gswitch-auto_*_amd64.deb   # replaces the upstream gswitch .deb
+sudo apt install ./dist/"$(awk '{print $2}' dist/checksums-deb.txt)"   # the newest build; replaces the upstream gswitch .deb
 systemctl --user enable --now gswitch.service # if the unit is not enabled afterwards
 ```
 

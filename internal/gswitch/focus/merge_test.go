@@ -217,8 +217,17 @@ func TestMergedWithX11Source(t *testing.T) {
 	if st.Available || st.AppKey != "org.gnome.terminal" || st.Purpose != PurposeUnknown || st.Seq != 1 || m.AppSource() != AppSourceX11 {
 		t.Fatalf("merged state = %+v, source %q", st, m.AppSource())
 	}
-	if rec.count() != 1 {
-		t.Fatalf("OnChange called %d times", rec.count())
+	// mergeLocked stores the new state before it calls OnChange (with a
+	// log line in between), so the lock-free Snapshot can show the state
+	// before the notification has been recorded.
+	for rec.count() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("OnChange called %d times", rec.count())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := rec.count(); n != 1 {
+		t.Fatalf("OnChange called %d times", n)
 	}
 
 	conn.setActive(x11FocusTestEditor)
