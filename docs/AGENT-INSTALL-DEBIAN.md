@@ -35,7 +35,7 @@ install/rollback notes in [FORK.md](FORK.md) («Debian 12»).
   `~/p/gswitch-auto` with that path in every command. In an `rm`, never use a variable: write the
   literal path.
 - **Long commands.** Steps 3, 4 and 5 take minutes each (download, `go install` and module
-  download, build with tests; the build took 6–13 minutes in testing). Run each as a background
+  download, build with tests; the build took 5–15 minutes in testing). Run each as a background
   command (Claude Code Bash: `run_in_background: true`) and wait for its `exit=` line, or give the
   call the maximum timeout (600000 ms). The network check of step 1 takes seconds, but up to
   5 minutes when it retries: give it the maximum timeout too. A tool timeout is not a result:
@@ -124,7 +124,7 @@ echo "== previous run"; ls "$B" 2>&1
 | layouts | `[('xkb', 'us'), ('xkb', 'ru')]`; `@as []` or options without a Shift `grp:` entry; `false` | the first two sources must be `xkb` `us` and `ru` in any order (variants are fine); anything else makes auto mode unavailable (`unsupported-layouts`): tell the user before building. A `grp:` option with `shift` (e.g. `grp:shifts_toggle`) collides with LShift+RShift and double Shift: tell the user. `per-window` `true`: record |
 | switch keys | `['<Super>space', 'XF86Keyboard']` | record whatever it is (rollback restores it) |
 | extensions | record; `false` | `disable-user-extensions` `true`: tell the user extensions are globally off |
-| gswitch | never installed: `dpkg-query: no packages found matching gswitch*` and `Failed to get unit file state for gswitch.service: No such file or directory`; or upstream `gswitch install ok installed 0.8.0…`, `gswitch deinstall ok config-files`, or an earlier `gswitch-auto` (record its version) and the unit's state | record: decides steps 6 and 7 |
+| gswitch | never installed: `dpkg-query: no packages found matching gswitch*` and `Failed to get unit file state for gswitch.service: No such file or directory`; or upstream `gswitch install ok installed 0.8.0…`, `gswitch deinstall ok config-files`, or an earlier `gswitch-auto` (record its version) and the unit's state. Once `gswitch-auto` is installed (a resumed run), a line `gswitch unknown ok not-installed` also appears: it comes from gswitch-auto's Provides/Replaces and says nothing about upstream | record: decides steps 6 and 7 |
 | shadowing | nothing | stop and ask: a local binary or unit override would hide the package |
 | user config | `No such file or directory`, or upstream's `ui.conf` only (earlier fork files: record them) | record |
 | im | `GTK_IM_MODULE=ibus`; a running `ibus-daemon`; `ibus-gtk3 install ok installed`, `ibus-gtk4 install ok installed` | record; a missing `ibus-gtk3`/`ibus-gtk4` goes into step 2 (without it GTK apps report no field type and strict mode denies them as `purpose-unknown`; GTK apps must be restarted afterwards) |
@@ -350,7 +350,8 @@ R=~/p/gswitch-auto; deb="$R/dist/$(awk '{print $2}' "$R/dist/checksums-deb.txt")
 ```
 
 Record the `Inst`/`Remv` lines: they are the packages step 6 adds or removes (for the report and
-rollback). Then ask the user to run, with the absolute path printed as `deb=`:
+rollback). In the `same` case apt plans nothing, the block prints no such lines and exits 1:
+expected, not a failure. Then ask the user to run, with the absolute path printed as `deb=`:
 
 ```bash
 sudo apt install /ABSOLUTE/PATH/TO/dist/gswitch-auto_<V>-1_amd64.deb
@@ -367,7 +368,10 @@ sudo apt install /ABSOLUTE/PATH/TO/dist/gswitch-auto_<V>-1_amd64.deb
 the Depends and Recommends (`gnome-shell-extension-appindicator`, `wl-clipboard`, …); if upstream
 `gswitch` was installed, apt removes it and the output contains
 `gswitch-auto: enabled gswitch.service for <user> (the removal of the gswitch package had disabled it)`.
-A notice `Download is performed unsandboxed as root` is harmless.
+A notice `Download is performed unsandboxed as root … couldn't be accessed by user '_apt'. -
+pkgAcquire::Run (13: Permission denied)` (under a Russian locale the same notice in Russian, with
+`_apt` and `pkgAcquire::Run (13: …)`) is harmless: the home directory is not readable by apt's
+`_apt` user.
 
 ## 7. Daemon checks (agent)
 
