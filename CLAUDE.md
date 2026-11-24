@@ -180,6 +180,12 @@ and `scripts/{pre,post}{install,remove}.sh` (SPEC §4).
 
 ## Housekeeping
 
+`docs/` is also the GitHub Pages source (branch `main`, folder `/docs`; site
+https://vabuter.github.io/gswitch-auto/): `docs/index.html` is a self-contained bilingual
+(ru/en) page with no external requests, `docs/assets/` holds its icon and `og.png`, and
+`docs/.nojekyll` turns Jekyll off, so the Markdown files under `docs/` are served raw, not
+rendered. Keep the page in step with README when features or install steps change.
+
 Do not commit `gswitch_0.8.0_linux_amd64.rpm` (6 MB binary, `*.rpm` is gitignored); it is
 kept only as the exact installed artifact (sha256 verified against the release's
 checksums.txt) and is the rollback target in `docs/FORK.md`.

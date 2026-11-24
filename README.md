@@ -5,6 +5,8 @@
 [![Upstream](https://img.shields.io/badge/upstream-arumata%2Fgswitch-informational)](https://github.com/arumata/gswitch)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+Project page: <https://vabuter.github.io/gswitch-auto/>
+
 ## About this fork
 
 **gswitch-auto** is a fork of [gswitch](https://github.com/arumata/gswitch)

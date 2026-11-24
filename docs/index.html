@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gswitch-auto — автоисправление раскладки для Linux</title>
+<meta name="description" content="gswitch-auto — форк gswitch с автоматическим исправлением слов, набранных не в той раскладке (как Punto Switcher). Linux, GNOME, us + ru: Fedora 44 на Wayland и Debian 12 на Xorg.">
+<meta name="theme-color" content="#070b12">
+<link rel="icon" href="assets/gswitch.svg" type="image/svg+xml">
+<link rel="canonical" href="https://vabuter.github.io/gswitch-auto/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://vabuter.github.io/gswitch-auto/">
+<meta property="og:title" content="gswitch-auto — автоисправление раскладки для Linux">
+<meta property="og:description" content="ghbdtn → привет без лишних нажатий: форк gswitch с автоматическим режимом для GNOME на Fedora и Debian.">
+<meta property="og:image" content="https://vabuter.github.io/gswitch-auto/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  // Language and theme are chosen before the first paint to avoid a flash.
+  (function () {
+    var root = document.documentElement, lang = null, theme = null;
+    try {
+      var q = new URLSearchParams(location.search).get("lang");
+      if (q === "ru" || q === "en") { lang = q; localStorage.setItem("gsa-lang", q); }
+      if (!lang) lang = localStorage.getItem("gsa-lang");
+      theme = localStorage.getItem("gsa-theme");
+    } catch (e) {}
+    if (lang !== "ru" && lang !== "en") {
+      var langs = navigator.languages || [navigator.language || "en"];
+      lang = /^ru\b/i.test(langs[0] || "") ? "ru" : "en";
+    }
+    root.lang = lang;
+    if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #070b12;
+    --bg-2: #0b111c;
+    --surface: #0f1724;
+    --surface-2: #142033;
+    --border: #1d2a3e;
+    --border-strong: #2a3b55;
+    --text: #e7edf6;
+    --muted: #97a6bb;
+    --faint: #66768c;
+    --green: #4caf50;
+    --green-hi: #62e06f;
+    --blue: #2196f3;
+    --blue-hi: #52b8ff;
+    --warn: #f2b84b;
+    --code-bg: #0a101a;
+    --key-top: #1b2638;
+    --key-side: #0c131f;
+    --key-text: #dbe5f2;
+    --shadow: 0 10px 40px rgba(0, 0, 0, .45);
+    --glow: .9;
+    --radius: 14px;
+    --sans: system-ui, -apple-system, "Segoe UI", "Noto Sans", Cantarell, Ubuntu, Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "Fira Code", "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f5f7fb; --bg-2: #eef2f8; --surface: #ffffff; --surface-2: #f3f6fb;
+      --border: #dbe2ec; --border-strong: #c4cfdd; --text: #0e1726; --muted: #4f5d72; --faint: #7a889b;
+      --green: #2e7d32; --green-hi: #2e9b3a; --blue: #1565c0; --blue-hi: #1e7fd8; --warn: #9a6400;
+      --code-bg: #0d1420; --key-top: #ffffff; --key-side: #c9d3e0; --key-text: #1a2433;
+      --shadow: 0 10px 30px rgba(20, 40, 80, .12); --glow: .45; color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f7fb; --bg-2: #eef2f8; --surface: #ffffff; --surface-2: #f3f6fb;
+    --border: #dbe2ec; --border-strong: #c4cfdd; --text: #0e1726; --muted: #4f5d72; --faint: #7a889b;
+    --green: #2e7d32; --green-hi: #2e9b3a; --blue: #1565c0; --blue-hi: #1e7fd8; --warn: #9a6400;
+    --code-bg: #0d1420; --key-top: #ffffff; --key-side: #c9d3e0; --key-text: #1a2433;
+    --shadow: 0 10px 30px rgba(20, 40, 80, .12); --glow: .45; color-scheme: light;
+  }
+
+  html[lang="ru"] [data-l="en"], html[lang="en"] [data-l="ru"] { display: none !important; }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 76px; -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 var(--sans);
+    text-rendering: optimizeLegibility; overflow-x: hidden;
+  }
+  a { color: var(--blue-hi); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--green-hi); }
+  :focus-visible { outline: 2px solid var(--blue-hi); outline-offset: 3px; border-radius: 6px; }
+  code, kbd, pre { font-family: var(--mono); }
+  :not(pre) > code {
+    font-size: .88em; padding: .12em .4em; border-radius: 6px;
+    background: var(--surface-2); border: 1px solid var(--border); white-space: nowrap;
+  }
+  .wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+  .skip { position: absolute; left: -999px; top: 8px; z-index: 100; background: var(--surface); padding: 8px 12px; border-radius: 8px; }
+  .skip:focus { left: 16px; }
+
+  /* Header */
+  header.top {
+    position: sticky; top: 0; z-index: 50; backdrop-filter: saturate(1.4) blur(12px);
+    background: color-mix(in srgb, var(--bg) 82%, transparent); border-bottom: 1px solid var(--border);
+  }
+  .top .wrap { display: flex; align-items: center; gap: 18px; min-height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
+  .brand img { width: 30px; height: 30px; }
+  .brand span b { color: var(--green-hi); font-weight: 700; }
+  nav.links { display: flex; gap: 4px; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+  nav.links::-webkit-scrollbar { display: none; }
+  nav.links a {
+    color: var(--muted); text-decoration: none; font-size: 14px; padding: 6px 9px; border-radius: 8px; white-space: nowrap;
+  }
+  nav.links a:hover, nav.links a.active { color: var(--text); background: var(--surface-2); }
+  .tools { display: flex; align-items: center; gap: 6px; }
+  .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 9px; overflow: hidden; }
+  .seg button, .icon-btn {
+    font: 600 13px/1 var(--sans); color: var(--muted); background: transparent; border: 0; padding: 8px 10px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { color: var(--text); background: var(--surface-2); }
+  .icon-btn { border: 1px solid var(--border-strong); border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 33px; padding: 0; }
+  .icon-btn:hover, .seg button:hover { color: var(--text); }
+  .icon-btn svg { width: 17px; height: 17px; }
+
+  /* Hero */
+  .hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }
+  .hero-bg { position: absolute; inset: 0; pointer-events: none; }
+  .hero-bg .grid {
+    position: absolute; inset: -40px -40px -40px 35%;
+    background-image:
+      repeating-linear-gradient(90deg, transparent 0 8px, color-mix(in srgb, var(--border) 70%, transparent) 8px 9px, transparent 9px 72px),
+      repeating-linear-gradient(0deg, transparent 0 8px, color-mix(in srgb, var(--border) 70%, transparent) 8px 9px, transparent 9px 72px);
+    -webkit-mask-image: radial-gradient(ellipse 70% 80% at 70% 45%, #000 0%, transparent 75%);
+            mask-image: radial-gradient(ellipse 70% 80% at 70% 45%, #000 0%, transparent 75%);
+    transform: perspective(900px) rotateX(18deg) rotateZ(-8deg); opacity: .9;
+  }
+  .hero-bg svg.beams { position: absolute; right: -120px; top: -40px; width: 980px; height: 640px; opacity: var(--glow); }
+  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.05fr .95fr; gap: 48px; align-items: center; padding: 72px 0 80px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted);
+    border: 1px solid var(--border-strong); border-radius: 999px; padding: 5px 12px 5px 8px; background: color-mix(in srgb, var(--surface) 70%, transparent);
+  }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 60%, transparent); animation: pulse 2.4s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 8px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  h1 { font-size: clamp(40px, 6vw, 64px); line-height: 1.05; margin: 18px 0 16px; letter-spacing: -1.2px; }
+  h1 .grad { background: linear-gradient(95deg, var(--green-hi), var(--blue-hi)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: clamp(18px, 2.2vw, 21px); color: var(--text); margin: 0 0 12px; max-width: 34em; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 36em; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px; text-decoration: none; font-weight: 650; font-size: 15.5px;
+    padding: 12px 18px; border-radius: 11px; border: 1px solid var(--border-strong); color: var(--text); background: var(--surface);
+  }
+  .btn:hover { color: var(--text); border-color: var(--blue); }
+  .btn.primary { border: 0; color: #04110a; background: linear-gradient(95deg, var(--green-hi), #3fd0a0 55%, var(--blue-hi)); }
+  .btn.primary:hover { filter: brightness(1.08); color: #04110a; }
+  .btn svg { width: 18px; height: 18px; }
+
+  /* Demo */
+  .demo { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+  .demo-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .demo-bar .dots { display: flex; gap: 6px; }
+  .demo-bar .dots i { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); display: block; }
+  .demo-bar .title { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ind {
+    font: 700 12px/1 var(--mono); padding: 5px 8px; border-radius: 6px; min-width: 34px; text-align: center; letter-spacing: .5px;
+    color: #fff; background: var(--blue); transition: background .25s, transform .25s;
+  }
+  .ind.ru { background: var(--green); }
+  .ind.flip { transform: scale(1.18); }
+  .demo-body { padding: 22px 20px 18px; min-height: 92px; font: 22px/1.5 var(--mono); color: var(--text); word-break: break-word; }
+  .demo-body .erase { background: color-mix(in srgb, var(--warn) 30%, transparent); border-radius: 4px; }
+  .demo-body .fixed { color: var(--green-hi); }
+  .caret { display: inline-block; width: 2px; height: 1.1em; vertical-align: -0.18em; background: var(--blue-hi); margin-left: 1px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .demo-log { border-top: 1px dashed var(--border); padding: 10px 16px 12px; font: 12.5px/1.6 var(--mono); color: var(--muted); min-height: 66px; }
+  .demo-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .demo-log .ok { color: var(--green-hi); }
+  .demo-log .skip { color: var(--faint); }
+  .demo-caption { margin: 12px 4px 0; color: var(--muted); font-size: 14px; }
+
+  /* Sections */
+  section { padding: 84px 0; border-bottom: 1px solid var(--border); }
+  section:nth-of-type(even) { background: var(--bg-2); }
+  .kicker { font: 700 12.5px/1 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--green-hi); margin: 0 0 12px; }
+  h2 { font-size: clamp(28px, 3.6vw, 38px); line-height: 1.15; margin: 0 0 14px; letter-spacing: -.5px; }
+  h3 { font-size: 18.5px; margin: 0 0 8px; line-height: 1.3; }
+  .intro { color: var(--muted); max-width: 46em; margin: 0 0 40px; font-size: 17px; }
+  .grid { display: grid; gap: 18px; }
+  .grid > *, .steps > li, .pipe > li, .docs > *, .checks > li, .hero .wrap > *, footer .wrap > * { min-width: 0; }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g2 { grid-template-columns: repeat(2, 1fr); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 22px 20px; position: relative; }
+  .card p { margin: 0; color: var(--muted); }
+  .card p + p { margin-top: 10px; }
+  .card .ico {
+    width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 14px;
+    background: linear-gradient(140deg, color-mix(in srgb, var(--green) 22%, transparent), color-mix(in srgb, var(--blue) 22%, transparent));
+    border: 1px solid var(--border-strong); color: var(--text);
+  }
+  .card .ico svg { width: 21px; height: 21px; }
+  .ex { font-family: var(--mono); color: var(--text); white-space: nowrap; }
+  .ex .arrow { color: var(--green-hi); }
+
+  /* Keycaps */
+  kbd {
+    display: inline-block; min-width: 2.1em; padding: .28em .6em .34em; font: 600 .82em/1.1 var(--mono); text-align: center;
+    color: var(--key-text); background: linear-gradient(180deg, var(--key-top), color-mix(in srgb, var(--key-top) 82%, var(--key-side)));
+    border: 1px solid var(--border-strong); border-bottom-width: 3px; border-bottom-color: var(--key-side); border-radius: 7px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.04) inset; white-space: nowrap; vertical-align: .05em;
+  }
+  .plus { color: var(--faint); margin: 0 .3em; font-weight: 600; }
+  .keys-table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .keys-table th, .keys-table td { text-align: left; padding: 16px 20px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .keys-table tr:last-child td { border-bottom: 0; }
+  .keys-table th { font-size: 13px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: .8px; background: var(--surface-2); }
+  .keys-table td:first-child { white-space: nowrap; width: 1%; }
+  .tag { display: inline-block; font: 600 11px/1 var(--sans); letter-spacing: .4px; padding: 4px 7px; border-radius: 6px; margin-left: 8px; vertical-align: 2px; border: 1px solid var(--border-strong); color: var(--muted); }
+  .tag.new { color: var(--green-hi); border-color: color-mix(in srgb, var(--green) 55%, transparent); }
+  .note {
+    margin-top: 18px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--muted); font-size: 15px; display: flex; gap: 12px;
+  }
+  .note svg { flex: none; width: 20px; height: 20px; color: var(--blue-hi); margin-top: 2px; }
+  .note.warn svg { color: var(--warn); }
+
+  /* Platforms */
+  .platform { display: flex; flex-direction: column; gap: 14px; }
+  .platform header { display: flex; align-items: center; gap: 12px; }
+  .platform .os { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font: 800 15px/1 var(--mono); color: #fff; flex: none; }
+  .os.fedora { background: linear-gradient(140deg, #3c6eb4, #294172); }
+  .os.debian { background: linear-gradient(140deg, #d70a53, #a80030); }
+  .platform h3 { margin: 0; }
+  .platform .meta { font: 13px/1.4 var(--mono); color: var(--faint); }
+  dl.facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; font-size: 15px; }
+  dl.facts dt { color: var(--faint); }
+  dl.facts dd { margin: 0; color: var(--muted); }
+
+  /* Code */
+  .code { position: relative; margin: 14px 0 0; }
+  .code pre {
+    margin: 0; padding: 16px 18px; padding-right: 56px; background: var(--code-bg); color: #dfe8f3; border: 1px solid #1b2738; border-radius: 12px;
+    overflow-x: auto; font-size: 14px; line-height: 1.65;
+  }
+  .code pre .c { color: #6f8197; }
+  .code pre .p { color: var(--green-hi); user-select: none; }
+  .copy {
+    position: absolute; top: 9px; right: 9px; width: 34px; height: 32px; border-radius: 8px; border: 1px solid #26364c;
+    background: #101a28; color: #9fb0c6; cursor: pointer; display: grid; place-items: center;
+  }
+  .copy:hover { color: #fff; border-color: #3a5170; }
+  .copy svg { width: 16px; height: 16px; }
+  .copy.done { color: var(--green-hi); border-color: var(--green); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
+  .tabs button {
+    font: 650 15px/1 var(--sans); color: var(--muted); background: var(--surface); border: 1px solid var(--border-strong);
+    padding: 11px 16px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 9px;
+  }
+  .tabs button[aria-selected="true"] { color: var(--text); border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent); }
+  .tabs .os { width: 22px; height: 22px; border-radius: 6px; font-size: 10px; display: inline-grid; place-items: center; color: #fff; font-family: var(--mono); font-weight: 800; }
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: 22px; }
+  .steps > li { counter-increment: s; position: relative; padding-left: 48px; }
+  .steps > li::before {
+    content: counter(s); position: absolute; left: 0; top: 0; width: 32px; height: 32px; border-radius: 50%;
+    display: grid; place-items: center; font: 700 14px/1 var(--mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong);
+  }
+  .steps h3 { margin: 4px 0 6px; font-size: 17px; }
+  .steps p { margin: 0; color: var(--muted); }
+  .tabpanel[hidden] { display: none; }
+  .option { border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; background: var(--surface); }
+  .option + .option { margin-top: 18px; }
+  .option > h3 { display: flex; align-items: center; gap: 10px; }
+
+  /* Config */
+  .files { display: grid; gap: 10px; margin-bottom: 26px; }
+  .file { display: flex; gap: 14px; align-items: baseline; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  .file code { flex: none; }
+  .file span { color: var(--muted); font-size: 15px; }
+  .cfg { width: 100%; border-collapse: collapse; font-size: 15px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .cfg th, .cfg td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .cfg th { white-space: nowrap; font-size: 13px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: .8px; background: var(--surface-2); }
+  .cfg td:nth-child(2) { font-family: var(--mono); font-size: 14px; color: var(--green-hi); white-space: nowrap; }
+  .cfg td:last-child { color: var(--muted); }
+  .table-scroll { overflow-x: auto; border-radius: var(--radius); }
+
+  /* Pipeline */
+  .pipe { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; counter-reset: p; list-style: none; padding: 0; margin: 0; }
+  .pipe li { counter-increment: p; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; position: relative; }
+  .pipe li::before {
+    content: "0" counter(p); display: block; font: 700 13px/1 var(--mono); color: var(--blue-hi); margin-bottom: 12px; letter-spacing: 1px;
+  }
+  .pipe li p { margin: 0; color: var(--muted); }
+  .pipe li .ex { display: block; margin-top: 10px; font-size: 14px; color: var(--faint); white-space: normal; }
+
+  /* Privacy */
+  .checks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px 28px; }
+  .checks li { display: flex; gap: 12px; color: var(--muted); }
+  .checks li svg { flex: none; width: 22px; height: 22px; color: var(--green-hi); margin-top: 1px; }
+  .checks b { color: var(--text); font-weight: 650; }
+
+  /* Docs list */
+  .docs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .doc { display: block; text-decoration: none; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .doc:hover { border-color: var(--blue); color: var(--text); }
+  .doc b { display: block; font-family: var(--mono); font-size: 14.5px; margin-bottom: 4px; color: var(--blue-hi); }
+  .doc span { color: var(--muted); font-size: 14.5px; }
+  .doc i { font-style: normal; font: 600 11px/1 var(--mono); color: var(--faint); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 5px; margin-left: 6px; vertical-align: 2px; }
+
+  footer { padding: 44px 0 56px; color: var(--muted); font-size: 14.5px; }
+  footer .wrap { display: grid; grid-template-columns: 1.3fr 1fr; gap: 28px; }
+  footer ul { margin: 0; padding-left: 18px; }
+  footer li + li { margin-top: 6px; }
+  footer .brand { margin-bottom: 10px; }
+
+  @media (max-width: 1080px) {
+    nav.links { display: none; }
+    .tools { margin-left: auto; }
+  }
+  @media (max-width: 980px) {
+    .hero .wrap { grid-template-columns: 1fr; padding: 52px 0 60px; gap: 36px; }
+    .g3, .pipe, .docs { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 680px) {
+    section { padding: 60px 0; }
+    .g3, .g2, .pipe, .docs, .checks { grid-template-columns: 1fr; }
+    footer .wrap { grid-template-columns: 1fr; }
+    .keys-table, .keys-table tbody, .keys-table tr, .keys-table td { display: block; width: 100%; }
+    .keys-table thead { display: none; }
+    .keys-table td { border-bottom: 0; padding: 6px 18px; }
+    .keys-table td:first-child { width: auto; padding-top: 16px; white-space: normal; }
+    .keys-table tr { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+    .keys-table tr:last-child { border-bottom: 0; }
+    .demo-body { font-size: 19px; }
+    .file { flex-direction: column; gap: 4px; }
+    .brand span.full { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .pulse, .caret { animation: none; }
+    .ind { transition: none; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main"><span data-l="ru">К содержанию</span><span data-l="en">Skip to content</span></a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="gswitch-auto">
+      <img src="assets/gswitch.svg" alt="" width="30" height="30">
+      <span>gswitch<b>-auto</b></span>
+    </a>
+    <nav class="links" aria-label="Sections">
+      <a href="#features"><span data-l="ru">Возможности</span><span data-l="en">Features</span></a>
+      <a href="#keys"><span data-l="ru">Клавиши</span><span data-l="en">Hotkeys</span></a>
+      <a href="#install"><span data-l="ru">Установка</span><span data-l="en">Install</span></a>
+      <a href="#config"><span data-l="ru">Настройка</span><span data-l="en">Configuration</span></a>
+      <a href="#how"><span data-l="ru">Как работает</span><span data-l="en">How it works</span></a>
+      <a href="#privacy"><span data-l="ru">Приватность</span><span data-l="en">Privacy</span></a>
+      <a href="#docs"><span data-l="ru">Документация</span><span data-l="en">Docs</span></a>
+    </nav>
+    <div class="tools">
+      <div class="seg" role="group" aria-label="Language / Язык">
+        <button type="button" data-set-lang="ru" lang="ru">RU</button>
+        <button type="button" data-set-lang="en" lang="en">EN</button>
+      </div>
+      <button type="button" class="icon-btn" id="theme" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/vabuter/gswitch-auto" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<div class="hero" id="top">
+  <div class="hero-bg" aria-hidden="true">
+    <div class="grid"></div>
+    <svg class="beams" viewBox="0 0 980 640" fill="none">
+      <defs>
+        <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2196f3" stop-opacity="0"/><stop offset=".45" stop-color="#52b8ff"/><stop offset="1" stop-color="#2196f3" stop-opacity=".2"/></linearGradient>
+        <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4caf50" stop-opacity="0"/><stop offset=".5" stop-color="#62e06f"/><stop offset="1" stop-color="#4caf50" stop-opacity=".25"/></linearGradient>
+        <filter id="blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="9"/></filter>
+      </defs>
+      <g filter="url(#blur)" opacity=".75">
+        <path d="M40 230 C 330 210, 520 330, 960 560" stroke="url(#bg1)" stroke-width="14"/>
+        <path d="M60 600 C 400 520, 640 300, 960 90" stroke="url(#bg2)" stroke-width="14"/>
+      </g>
+      <path d="M40 230 C 330 210, 520 330, 960 560" stroke="url(#bg1)" stroke-width="2"/>
+      <path d="M70 244 C 340 226, 540 342, 960 584" stroke="url(#bg1)" stroke-width="1" opacity=".55"/>
+      <path d="M60 600 C 400 520, 640 300, 960 90" stroke="url(#bg2)" stroke-width="2"/>
+      <path d="M90 616 C 420 538, 660 320, 960 112" stroke="url(#bg2)" stroke-width="1" opacity=".55"/>
+    </svg>
+  </div>
+  <div class="wrap">
+    <div>
+      <span class="eyebrow"><span class="pulse" aria-hidden="true"></span>
+        <span data-l="ru">В разработке · первый релиз — <code>v0.8.0+auto.1</code></span>
+        <span data-l="en">In development · first release: <code>v0.8.0+auto.1</code></span>
+      </span>
+      <h1>gswitch<span class="grad">-auto</span></h1>
+      <p class="lead" data-l="ru">Исправляет слова, набранные не в той раскладке, — сам, как Punto&nbsp;Switcher. Для Linux с GNOME: Fedora&nbsp;44 на Wayland и Debian&nbsp;12 на Xorg.</p>
+      <p class="lead" data-l="en">Fixes words typed in the wrong keyboard layout — automatically, like Punto&nbsp;Switcher. For Linux with GNOME: Fedora&nbsp;44 on Wayland and Debian&nbsp;12 on Xorg.</p>
+      <p class="sub" data-l="ru">Форк <a href="https://github.com/arumata/gswitch">gswitch</a>: всё ручное исправление на месте, плюс автоматический режим для пары раскладок us&nbsp;+&nbsp;ru. Работает локально — без сети и без нейросетей.</p>
+      <p class="sub" data-l="en">A fork of <a href="https://github.com/arumata/gswitch">gswitch</a>: all of its manual correction, plus an automatic mode for the us&nbsp;+&nbsp;ru layout pair. It runs locally — no network, no LLM.</p>
+      <div class="cta">
+        <a class="btn primary" href="#install">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+          <span data-l="ru">Установка</span><span data-l="en">Install</span>
+        </a>
+        <a class="btn" href="https://github.com/vabuter/gswitch-auto">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg>
+          <span data-l="ru">Исходники на GitHub</span><span data-l="en">Source on GitHub</span>
+        </a>
+      </div>
+    </div>
+    <figure style="margin:0">
+      <div class="demo" role="img" aria-label="ghbdtn → привет: демонстрация автоисправления / auto-correction demo">
+        <div class="demo-bar">
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="title"><span data-l="ru">Текстовый редактор</span><span data-l="en">Text Editor</span></span>
+          <span class="ind" id="ind">en</span>
+        </div>
+        <div class="demo-body"><span id="demoText"></span><span class="caret" aria-hidden="true"></span></div>
+        <div class="demo-log" id="demoLog" aria-hidden="true"></div>
+      </div>
+      <figcaption class="demo-caption">
+        <span data-l="ru">Пробел после слова в чужой раскладке — и через 120&nbsp;мс оно перепечатано, а раскладка уже переключена: можно печатать дальше.</span>
+        <span data-l="en">Press Space after a word in the wrong layout: 120&nbsp;ms later it is retyped and the layout is already switched, so you just keep typing.</span>
+      </figcaption>
+    </figure>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Возможности</span><span data-l="en">Features</span></p>
+    <h2><span data-l="ru">Что добавляет форк</span><span data-l="en">What the fork adds</span></h2>
+    <p class="intro" data-l="ru">gswitch исправляет текст только по нажатию триггера. gswitch-auto умеет делать это сам — и остаётся предсказуемым: исправляет лишь явные случаи, ничего не делает по Enter и отменяется одним жестом.</p>
+    <p class="intro" data-l="en">gswitch fixes text only when you press a trigger. gswitch-auto can do it by itself and stays predictable: it fixes only clear cases, never acts on Enter and is undone with one gesture.</p>
+    <div class="grid g3">
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+        <h3><span data-l="ru">Автоматический режим</span><span data-l="en">Automatic mode</span></h3>
+        <p data-l="ru">После пробела слово проверяется: <span class="ex">ghbdtn <span class="arrow">→</span> привет</span>, <span class="ex">руддщ <span class="arrow">→</span> hello</span>. Слово стирается, раскладка переключается, текст перепечатывается. Enter исправление не запускает, а любая клавиша во время паузы его отменяет.</p>
+        <p data-l="en">After Space the word is checked: <span class="ex">ghbdtn <span class="arrow">→</span> привет</span>, <span class="ex">руддщ <span class="arrow">→</span> hello</span>. The word is erased, the layout switched and the text retyped. Enter never triggers a fix, and any key pressed during the pause cancels it.</p>
+        <p data-l="ru">По умолчанию выключен.</p><p data-l="en">Off by default.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></div>
+        <h3><span data-l="ru">Отмена одним жестом</span><span data-l="en">One-gesture undo</span></h3>
+        <p data-l="ru">Двойной <kbd>Shift</kbd> сразу после автоисправления возвращает исходное слово и раскладку. Отменённое слово можно запоминать как исключение — второй раз оно не исправится.</p>
+        <p data-l="en">Double <kbd>Shift</kbd> right after an automatic fix restores the original word and layout. The undone word can be learned as an exception, so it is not fixed again.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 15h10"/></svg></div>
+        <h3><span data-l="ru">Режим одним аккордом</span><span data-l="en">One chord to toggle</span></h3>
+        <p data-l="ru"><kbd>LShift</kbd><span class="plus">+</span><kbd>RShift</kbd> вместе включают и выключают автоматический режим. Состояние видно в меню трея и сохраняется.</p>
+        <p data-l="en"><kbd>LShift</kbd><span class="plus">+</span><kbd>RShift</kbd> together turn automatic mode on and off. The tray menu shows the state, and it is saved.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg></div>
+        <h3><span data-l="ru">Выделенный текст</span><span data-l="en">Selected text</span></h3>
+        <p data-l="ru"><kbd>LShift</kbd><span class="plus">+</span><kbd>RAlt</kbd><span class="plus">+</span><kbd>RCtrl</kbd> переводит выделенный фрагмент в другую раскладку. Привычный <kbd>Ctrl</kbd> + двойной <kbd>Shift</kbd> из gswitch тоже работает.</p>
+        <p data-l="en"><kbd>LShift</kbd><span class="plus">+</span><kbd>RAlt</kbd><span class="plus">+</span><kbd>RCtrl</kbd> converts the selected text to the other layout. gswitch's <kbd>Ctrl</kbd> + double <kbd>Shift</kbd> still works too.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg></div>
+        <h3><span data-l="ru">Исключения</span><span data-l="en">Exceptions</span></h3>
+        <p data-l="ru">Слова, которые никогда не исправляются, и программы, где автоматический режим выключен. Терминалы, поля паролей и экран блокировки пропускаются по умолчанию.</p>
+        <p data-l="en">Words that are never corrected and applications where automatic mode is off. Terminals, password fields and the lock screen are skipped by default.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></div>
+        <h3><span data-l="ru">Настройки в трее</span><span data-l="en">Settings in the tray</span></h3>
+        <p data-l="ru">Вкладка «Автоисправление»: режим, слова и программы-исключения, сочетания клавиш, управление службой — запуск, остановка, перезапуск, автозапуск. Новые строки интерфейса — на русском и английском.</p>
+        <p data-l="en">An "Auto correction" tab: the mode, exception words and applications, hotkeys and service control — start, stop, restart, start at login. The new interface strings exist in English and Russian.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg></div>
+        <h3><span data-l="ru">Локально и быстро</span><span data-l="en">Local and fast</span></h3>
+        <p data-l="ru">Детектор языка — Go-порт модели <a href="https://github.com/rashevskyv/punto-rs">punto-rs</a>: фильтр Блума и буквенные триграммы. Проверка слова занимает микросекунды, без сети и без LLM.</p>
+        <p data-l="en">The language detector is a Go port of the <a href="https://github.com/rashevskyv/punto-rs">punto-rs</a> model: a Bloom filter and letter trigrams. A word is checked in microseconds, with no network and no LLM.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></div>
+        <h3><span data-l="ru">Всё из gswitch — на месте</span><span data-l="en">All of gswitch is kept</span></h3>
+        <p data-l="ru">Двойной Shift для последнего слова, фраза с зажатым Shift, выделение, смена регистра, отмена повтором триггера — работают как раньше. Пакет заменяет gswitch на месте: те же команды и пути.</p>
+        <p data-l="en">Double Shift for the last word, the held-Shift phrase gesture, selection, case swap and undo by repeating the trigger work as before. The package replaces gswitch in place: same commands and paths.</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div>
+        <h3><span data-l="ru">Понимает окно и поле</span><span data-l="en">Knows the window and field</span></h3>
+        <p data-l="ru">Небольшое расширение GNOME Shell сообщает, какая программа в фокусе и что за поле ввода (текст, пароль, терминал). Заголовков окон и текста оно не передаёт.</p>
+        <p data-l="en">A small GNOME Shell extension reports which application has focus and what kind of field it is (text, password, terminal). It exposes no window titles and no text.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="keys">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Клавиши</span><span data-l="en">Hotkeys</span></p>
+    <h2><span data-l="ru">Всё управление — с клавиатуры</span><span data-l="en">Everything from the keyboard</span></h2>
+    <p class="intro" data-l="ru">Сочетания нажимаются вместе и отпускаются. Их можно поменять в настройках трея.</p>
+    <p class="intro" data-l="en">Chords are pressed together and released. You can change them in the tray settings.</p>
+    <table class="keys-table">
+      <thead><tr><th><span data-l="ru">Клавиши</span><span data-l="en">Keys</span></th><th><span data-l="ru">Действие</span><span data-l="en">Action</span></th></tr></thead>
+      <tbody>
+        <tr>
+          <td><kbd>LShift</kbd><span class="plus">+</span><kbd>RShift</kbd></td>
+          <td><span data-l="ru">Включить или выключить автоматический режим</span><span data-l="en">Turn automatic mode on or off</span><span class="tag new" data-l="ru">форк</span><span class="tag new" data-l="en">fork</span></td>
+        </tr>
+        <tr>
+          <td><kbd>Shift</kbd> <kbd>Shift</kbd></td>
+          <td><span data-l="ru">Исправить последнее слово; сразу после автоисправления — отменить его</span><span data-l="en">Fix the last word; right after an automatic fix, undo it</span></td>
+        </tr>
+        <tr>
+          <td><kbd>LShift</kbd><span class="plus">+</span><kbd>RAlt</kbd><span class="plus">+</span><kbd>RCtrl</kbd></td>
+          <td><span data-l="ru">Перевести выделенный текст в другую раскладку</span><span data-l="en">Convert the selected text to the other layout</span><span class="tag new" data-l="ru">форк</span><span class="tag new" data-l="en">fork</span></td>
+        </tr>
+        <tr>
+          <td><kbd>Shift</kbd> <span data-l="ru">зажат</span><span data-l="en">held</span> <span class="plus">+</span> <kbd>Shift</kbd> <kbd>Shift</kbd></td>
+          <td><span data-l="ru">Исправить текущую фразу (зажать один Shift и дважды нажать другой)</span><span data-l="en">Fix the current phrase (hold one Shift, double-tap the other)</span></td>
+        </tr>
+        <tr>
+          <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd> <kbd>Shift</kbd></td>
+          <td><span data-l="ru">Перевести выделенный текст (жест gswitch)</span><span data-l="en">Convert the selected text (gswitch gesture)</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <span data-l="ru">В сочетании для выделения нажимайте <kbd>Shift</kbd> первым: если первым нажат <kbd>RAlt</kbd>, может сработать системное переключение раскладки <code>&lt;Alt&gt;Shift_L</code> — демон тогда вернёт раскладку обратно.</span>
+      <span data-l="en">In the selection chord press <kbd>Shift</kbd> first: with <kbd>RAlt</kbd> first, GNOME's <code>&lt;Alt&gt;Shift_L</code> layout shortcut can fire, and the daemon then restores the layout.</span>
+    </div>
+  </div>
+</section>
+
+<section id="platforms">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Платформы</span><span data-l="en">Platforms</span></p>
+    <h2><span data-l="ru">Две системы — одни и те же бинарники</span><span data-l="en">Two systems, the same binaries</span></h2>
+    <p class="intro" data-l="ru">Демон сам выбирает источники при запуске — по типу сеанса и версии GNOME Shell. Пара раскладок — us&nbsp;+&nbsp;ru, архитектура — x86_64.</p>
+    <p class="intro" data-l="en">The daemon picks its sources at start from the session type and the GNOME Shell version. The layout pair is us&nbsp;+&nbsp;ru, the architecture x86_64.</p>
+    <div class="grid g2">
+      <article class="card platform">
+        <header><span class="os fedora" aria-hidden="true">F</span><div><h3>Fedora 44</h3><div class="meta">GNOME 50 · Wayland · IBus · RPM</div></div></header>
+        <dl class="facts">
+          <dt data-l="ru">Раскладка</dt><dt data-l="en">Layout</dt>
+          <dd data-l="ru">движок IBus: с GNOME Shell 49.3 он следует за раскладкой (<code>xkb:ru::rus</code>)</dd>
+          <dd data-l="en">the IBus engine: from GNOME Shell 49.3 on it follows the layout (<code>xkb:ru::rus</code>)</dd>
+          <dt data-l="ru">Фокус</dt><dt data-l="en">Focus</dt>
+          <dd data-l="ru">расширение <code>gswitch-focus</code> (ES-модули, GNOME 50)</dd>
+          <dd data-l="en">the <code>gswitch-focus</code> extension (ES modules, GNOME 50)</dd>
+          <dt data-l="ru">Строгий режим</dt><dt data-l="en">Strict mode</dt>
+          <dd data-l="ru">выключен: всё, кроме исключений, исправляется</dd>
+          <dd data-l="en">off: everything except the exclusions is corrected</dd>
+        </dl>
+      </article>
+      <article class="card platform">
+        <header><span class="os debian" aria-hidden="true">D</span><div><h3>Debian 12</h3><div class="meta">GNOME 43.9 · Xorg · IBus · .deb</div></div></header>
+        <dl class="facts">
+          <dt data-l="ru">Раскладка</dt><dt data-l="en">Layout</dt>
+          <dd data-l="ru">группа XKB X-дисплея, опрос каждые 50&nbsp;мс (движок IBus в GNOME 43 всегда <code>xkb:us::eng</code>)</dd>
+          <dd data-l="en">the XKB group of the X display, polled every 50&nbsp;ms (GNOME 43 always reports the IBus engine as <code>xkb:us::eng</code>)</dd>
+          <dt data-l="ru">Фокус</dt><dt data-l="en">Focus</dt>
+          <dd data-l="ru"><code>_NET_ACTIVE_WINDOW</code> и расширение для GNOME 43/44</dd>
+          <dd data-l="en"><code>_NET_ACTIVE_WINDOW</code> and the extension for GNOME 43/44</dd>
+          <dt data-l="ru">Строгий режим</dt><dt data-l="en">Strict mode</dt>
+          <dd data-l="ru">включён: исправления только в полях, тип которых известен, — так защищены поля паролей GTK3</dd>
+          <dd data-l="en">on: fixes only in fields whose type is known, which protects GTK 3 password fields</dd>
+        </dl>
+      </article>
+    </div>
+    <div class="note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <span data-l="ru">В других окружениях — GNOME на Wayland ниже 49.3, KDE, другие пары раскладок, без IBus — автоматический режим сообщает, что недоступен, а всё остальное работает как в gswitch. На X11 поля паролей Qt-программ и XIM-клиентов (xterm, Emacs, Java, Wine) выглядят как обычный текст: их защищает только список программ-исключений, и основные в нём уже есть.</span>
+      <span data-l="en">Elsewhere — GNOME Wayland below 49.3, KDE, other layout pairs, no IBus — automatic mode reports itself as unavailable and everything else works like gswitch. On X11, password fields of Qt applications and XIM clients (xterm, Emacs, Java, Wine) look like ordinary text: only the exclusion list protects them, and it already contains the common ones.</span>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Установка</span><span data-l="en">Install</span></p>
+    <h2><span data-l="ru">Сборка и установка</span><span data-l="en">Build and install</span></h2>
+    <p class="intro" data-l="ru">До первого релиза пакеты собираются из исходников. Сборки вида <code>0.8.0+auto.0.dev&lt;n&gt;.g&lt;commit&gt;</code> уже заменяют gswitch&nbsp;0.8.0, а откат — обычная установка пакета gswitch обратно.</p>
+    <p class="intro" data-l="en">Until the first release, packages are built from source. Builds versioned <code>0.8.0+auto.0.dev&lt;n&gt;.g&lt;commit&gt;</code> already replace gswitch&nbsp;0.8.0, and rolling back is just installing the gswitch package again.</p>
+
+    <div class="tabs" role="tablist" aria-label="OS">
+      <button type="button" role="tab" id="tab-fedora" aria-controls="panel-fedora" aria-selected="true"><span class="os fedora" aria-hidden="true">F</span>Fedora 44</button>
+      <button type="button" role="tab" id="tab-debian" aria-controls="panel-debian" aria-selected="false"><span class="os debian" aria-hidden="true">D</span>Debian 12</button>
+    </div>
+
+    <div class="tabpanel" role="tabpanel" id="panel-fedora" aria-labelledby="tab-fedora">
+      <ol class="steps">
+        <li>
+          <h3><span data-l="ru">Инструменты сборки</span><span data-l="en">Build tools</span></h3>
+          <p data-l="ru">Go, компилятор C (CGO), заголовки GTK3 и X11, а также nFPM для упаковки.</p>
+          <p data-l="en">Go, a C compiler (CGO), GTK 3 and X11 headers, and nFPM for packaging.</p>
+          <div class="code"><pre><code>sudo dnf install golang gcc make pkgconf-pkg-config gtk3-devel libxkbcommon-devel libX11-devel rpm cpio python3 nodejs
+go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0   <span class="c"># installs ~/go/bin/nfpm</span></code></pre></div>
+        </li>
+        <li>
+          <h3><span data-l="ru">Сборка RPM</span><span data-l="en">Build the RPM</span></h3>
+          <p data-l="ru">Нужен полный клон с тегами (не <code>--depth 1</code>): версия пакета вычисляется от тега <code>v0.8.0</code>. <code>make rpm</code> прогоняет тесты и проверки пакета.</p>
+          <p data-l="en">Use a full clone with tags (not <code>--depth 1</code>): the package version is derived from the <code>v0.8.0</code> tag. <code>make rpm</code> runs the tests and the package checks.</p>
+          <div class="code"><pre><code>git clone https://github.com/vabuter/gswitch-auto.git
+cd gswitch-auto
+make rpm                                      <span class="c"># dist/gswitch-auto-&lt;version&gt;-1.x86_64.rpm</span></code></pre></div>
+        </li>
+        <li>
+          <h3><span data-l="ru">Установка</span><span data-l="en">Install</span></h3>
+          <p data-l="ru">Пакет заменяет gswitch (<code>Obsoletes: gswitch &lt; 0.9</code>) с теми же командами и путями.</p>
+          <p data-l="en">The package replaces gswitch (<code>Obsoletes: gswitch &lt; 0.9</code>) with the same commands and paths.</p>
+          <div class="code"><pre><code>sudo dnf install ./dist/gswitch-auto-*.rpm
+systemctl --user enable --now gswitch.service <span class="c"># only if it is not running yet</span></code></pre></div>
+        </li>
+        <li>
+          <h3><span data-l="ru">Перезайти и включить</span><span data-l="en">Log in again and enable</span></h3>
+          <p data-l="ru">Выйдите из сеанса и войдите снова: GNOME Shell загрузит расширение, запустится новый трей. Включите расширение в трее («Автоисправление» → «Исключённые приложения» → «Включить») или командой ниже, затем включите автоматический режим: <kbd>LShift</kbd><span class="plus">+</span><kbd>RShift</kbd>.</p>
+          <p data-l="en">Log out and back in: GNOME Shell loads the extension and the new tray starts. Enable the extension in the tray ("Auto correction" → "Excluded applications" → "Enable") or with the command below, then turn automatic mode on: <kbd>LShift</kbd><span class="plus">+</span><kbd>RShift</kbd>.</p>
+          <div class="code"><pre><code>gnome-extensions enable gswitch-focus@vabuter.github.io</code></pre></div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="tabpanel" role="tabpanel" id="panel-debian" aria-labelledby="tab-debian" hidden>
+      <div class="note warn" style="margin:0 0 20px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>
+        <span data-l="ru">Нужен сеанс <b>«GNOME на Xorg»</b> (выбирается шестерёнкой на экране входа). Под Wayland у GNOME 43 нет источника раскладки, и автоматический режим будет недоступен.</span>
+        <span data-l="en">Use the <b>"GNOME on Xorg"</b> session (the gear icon on the login screen). Under Wayland, GNOME 43 offers no layout source, and automatic mode stays unavailable.</span>
+      </div>
+      <div class="option">
+        <h3><span data-l="ru">С ИИ-агентом</span><span data-l="en">With an AI agent</span><span class="tag new" data-l="ru">проще всего</span><span class="tag new" data-l="en">easiest</span></h3>
+        <p data-l="ru" style="color:var(--muted);margin:0">В Debian 12 нет Go нужной версии, поэтому агент по пошаговой инструкции скачает Go&nbsp;1.26 в <code>~/.cache</code> (без root), соберёт <code>.deb</code> с тестами и lintian, проверит демон, расширение и трей. Команды с <code>sudo</code> он покажет вам, а клавиши за вас не нажимает.</p>
+        <p data-l="en" style="color:var(--muted);margin:0">Debian 12 lacks a recent enough Go, so the agent follows a step-by-step runbook: it downloads Go&nbsp;1.26 into <code>~/.cache</code> (no root), builds the <code>.deb</code> with tests and lintian, and checks the daemon, the extension and the tray. It shows you the <code>sudo</code> commands and never presses keys for you.</p>
+        <div class="code"><pre><code>sudo apt install git
+git clone https://github.com/vabuter/gswitch-auto.git ~/p/gswitch-auto
+cd ~/p/gswitch-auto                           <span class="c"># start the agent here, e.g. claude</span></code></pre></div>
+        <p data-l="ru" style="color:var(--muted);margin:14px 0 0">И попросите: <i>«Установи gswitch-auto на эту машину по инструкции <code>docs/AGENT-INSTALL-DEBIAN.md</code>»</i>. Агента запускайте в терминале внутри сеанса GNOME, а не по SSH.</p>
+        <p data-l="en" style="color:var(--muted);margin:14px 0 0">Then ask: <i>"Install gswitch-auto on this machine following <code>docs/AGENT-INSTALL-DEBIAN.md</code>"</i>. Start the agent in a terminal inside the GNOME session, not over SSH.</p>
+      </div>
+      <div class="option">
+        <h3><span data-l="ru">Вручную</span><span data-l="en">By hand</span></h3>
+        <p data-l="ru" style="color:var(--muted);margin:0">Собрать <code>.deb</code> на Fedora в контейнере podman (образ Debian 12 с Go 1.26) и перенести на машину — или собрать прямо на Debian по <a href="https://github.com/vabuter/gswitch-auto/blob/main/docs/INSTALL-DEBIAN.md">INSTALL-DEBIAN.md</a>.</p>
+        <p data-l="en" style="color:var(--muted);margin:0">Build the <code>.deb</code> on Fedora in a podman container (a Debian 12 image with Go 1.26) and copy it over — or build it on Debian itself following <a href="https://github.com/vabuter/gswitch-auto/blob/main/docs/INSTALL-DEBIAN.md">INSTALL-DEBIAN.md</a>.</p>
+        <div class="code"><pre><code>make deb                                      <span class="c"># on Fedora: dist/gswitch-auto_&lt;version&gt;-1_amd64.deb</span>
+sudo apt install ./gswitch-auto_&lt;version&gt;-1_amd64.deb   <span class="c"># on Debian, replaces gswitch</span>
+systemctl --user enable --now gswitch.service <span class="c"># if it is not active afterwards</span></code></pre></div>
+        <p data-l="ru" style="color:var(--muted);margin:14px 0 0">Затем перезапустите GNOME Shell: <kbd>Alt</kbd><span class="plus">+</span><kbd>F2</kbd>, <kbd>r</kbd>, <kbd>Enter</kbd> (окна останутся на месте) — и включите расширение и автоматический режим.</p>
+        <p data-l="en" style="color:var(--muted);margin:14px 0 0">Then restart GNOME Shell: <kbd>Alt</kbd><span class="plus">+</span><kbd>F2</kbd>, <kbd>r</kbd>, <kbd>Enter</kbd> (your windows stay) — and enable the extension and automatic mode.</p>
+        <div class="code"><pre><code>gnome-extensions enable gswitch-focus@vabuter.github.io</code></pre></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Настройка</span><span data-l="en">Configuration</span></p>
+    <h2><span data-l="ru">Настройки пользователя</span><span data-l="en">Per-user settings</span></h2>
+    <p class="intro" data-l="ru">Обычно всё настраивается в трее. Файлы лежат в <code>~/.config/gswitch</code> (каталог 0700, файлы 0600): их пишет трей, а демон только читает и подхватывает изменения без перезапуска. <code>/etc/gswitch/default.conf</code> сохраняет прежний смысл из gswitch.</p>
+    <p class="intro" data-l="en">Usually everything is set in the tray. The files live in <code>~/.config/gswitch</code> (directory 0700, files 0600): the tray writes them, the daemon only reads them and picks up changes without a restart. <code>/etc/gswitch/default.conf</code> keeps its gswitch meaning.</p>
+    <div class="files">
+      <div class="file"><code>auto.conf</code><span data-l="ru">параметры автоматического режима в формате <code>ключ=значение</code></span><span data-l="en">automatic-mode settings as <code>key=value</code></span></div>
+      <div class="file"><code>exceptions-words.txt</code><span data-l="ru">слова, которые не исправляются, по одному в строке — как они выглядят на экране до исправления</span><span data-l="en">words that are never corrected, one per line, as they look on screen before the fix</span></div>
+      <div class="file"><code>exceptions-apps.txt</code><span data-l="ru">программы без автоисправления: desktop id или WM_CLASS, можно с <code>*</code> и <code>?</code></span><span data-l="en">applications without auto correction: desktop id or WM_CLASS, <code>*</code> and <code>?</code> allowed</span></div>
+    </div>
+    <div class="table-scroll">
+      <table class="cfg">
+        <thead><tr><th><span data-l="ru">Ключ</span><span data-l="en">Key</span></th><th><span data-l="ru">По умолчанию</span><span data-l="en">Default</span></th><th><span data-l="ru">Смысл</span><span data-l="en">Meaning</span></th></tr></thead>
+        <tbody>
+          <tr><td><code>auto-enabled</code></td><td>false</td><td><span data-l="ru">автоматический режим (переключается и аккордом, и в трее)</span><span data-l="en">automatic mode (also toggled by the chord and the tray)</span></td></tr>
+          <tr><td><code>auto-min-letters</code></td><td>3</td><td><span data-l="ru">самое короткое проверяемое слово (2–8)</span><span data-l="en">shortest word that is checked (2–8)</span></td></tr>
+          <tr><td><code>auto-holdoff-ms</code></td><td>120</td><td><span data-l="ru">пауза после пробела перед исправлением (30–1000)</span><span data-l="en">quiet time after Space before a fix (30–1000)</span></td></tr>
+          <tr><td><code>auto-learn-on-undo</code></td><td>true</td><td><span data-l="ru">запоминать отменённое слово как исключение</span><span data-l="en">learn an undone word as an exception</span></td></tr>
+          <tr><td><code>auto-skip-password</code></td><td>true</td><td><span data-l="ru">не исправлять в полях пароля и PIN</span><span data-l="en">skip password and PIN fields</span></td></tr>
+          <tr><td><code>auto-skip-terminal</code></td><td>true</td><td><span data-l="ru">не исправлять в терминалах</span><span data-l="en">skip terminals</span></td></tr>
+          <tr><td><code>auto-strict-purpose</code></td><td>auto</td><td><span data-l="ru">исправлять только в полях, тип которых сообщает расширение (<code>auto</code>: да на X11, нет на Wayland)</span><span data-l="en">fix only in fields whose type the extension reports (<code>auto</code>: yes on X11, no on Wayland)</span></td></tr>
+          <tr><td><code>hotkey-toggle-auto</code></td><td>42+54</td><td><span data-l="ru">аккорд вкл./выкл. в сканкодах evdev (LShift+RShift) или <code>none</code></span><span data-l="en">toggle chord as evdev scancodes (LShift+RShift), or <code>none</code></span></td></tr>
+          <tr><td><code>hotkey-convert-selection</code></td><td>42+97+100</td><td><span data-l="ru">аккорд для выделения (LShift+RCtrl+RAlt) или <code>none</code></span><span data-l="en">selection chord (LShift+RCtrl+RAlt), or <code>none</code></span></td></tr>
+          <tr><td><code>layout-source</code></td><td>auto</td><td><span data-l="ru">источник раскладки: <code>auto</code>, <code>ibus</code>, <code>x11</code>, <code>none</code></span><span data-l="en">layout source: <code>auto</code>, <code>ibus</code>, <code>x11</code>, <code>none</code></span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="intro" style="margin:16px 0 0;font-size:15px" data-l="ru">Полная таблица (21 ключ) — в <a href="https://github.com/vabuter/gswitch-auto#configuration-configgswitch">README</a>.</p>
+    <p class="intro" style="margin:16px 0 0;font-size:15px" data-l="en">The full table (21 keys) is in the <a href="https://github.com/vabuter/gswitch-auto#configuration-configgswitch">README</a>.</p>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Как это работает</span><span data-l="en">How it works</span></p>
+    <h2><span data-l="ru">От нажатия клавиши до исправления</span><span data-l="en">From keystroke to fix</span></h2>
+    <p class="intro" data-l="ru">Как и gswitch, демон работает на уровне ввода Linux, поэтому исправление действует во всех программах — без плагинов для браузера или редактора.</p>
+    <p class="intro" data-l="en">Like gswitch, the daemon works at the Linux input layer, so corrections work in every application — no browser or editor plugins.</p>
+    <ol class="pipe">
+      <li>
+        <h3><span data-l="ru">Нажатия</span><span data-l="en">Keystrokes</span></h3>
+        <p data-l="ru">Демон читает нажатия из <code>/dev/input</code> (evdev) и копит сканкоды текущего слова.</p>
+        <p data-l="en">The daemon reads keystrokes from <code>/dev/input</code> (evdev) and buffers the scancodes of the current word.</p>
+      </li>
+      <li>
+        <h3><span data-l="ru">Два прочтения</span><span data-l="en">Two readings</span></h3>
+        <p data-l="ru">Таблица «сканкод → клавиша XKB» даёт слово сразу в обеих раскладках.</p>
+        <p data-l="en">A scancode → XKB key table renders the word in both layouts at once.</p>
+        <span class="ex">ghbdtn ⇄ привет</span>
+      </li>
+      <li>
+        <h3><span data-l="ru">Детектор</span><span data-l="en">Detector</span></h3>
+        <p data-l="ru">Фильтр Блума и буквенные триграммы решают, какое прочтение — настоящее слово и с каким запасом.</p>
+        <p data-l="en">A Bloom filter and letter trigrams decide which reading is a real word, and by what margin.</p>
+      </li>
+      <li>
+        <h3><span data-l="ru">Контекст</span><span data-l="en">Context</span></h3>
+        <p data-l="ru">Какая раскладка активна (IBus или группа XKB), какая программа в фокусе и что за поле, нет ли слова или программы в исключениях.</p>
+        <p data-l="en">Which layout is active (IBus or the XKB group), which application has focus and what kind of field it is, and whether the word or app is an exception.</p>
+      </li>
+      <li>
+        <h3><span data-l="ru">Пауза</span><span data-l="en">Hold-off</span></h3>
+        <p data-l="ru">120&nbsp;мс тишины после пробела. Любая клавиша в это время отменяет исправление; Enter его не запускает.</p>
+        <p data-l="en">120&nbsp;ms of quiet after Space. Any key in that window cancels the fix; Enter never starts one.</p>
+      </li>
+      <li>
+        <h3><span data-l="ru">Исправление</span><span data-l="en">Fix</span></h3>
+        <p data-l="ru">Через виртуальную клавиатуру <code>uinput</code>: Backspace, переключение раскладки с подтверждением, перепечатка слова.</p>
+        <p data-l="en">Through a <code>uinput</code> virtual keyboard: Backspace, a confirmed layout switch, the word retyped.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section id="privacy">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Приватность</span><span data-l="en">Privacy</span></p>
+    <h2><span data-l="ru">Клавиатура — дело личное</span><span data-l="en">Your keyboard is your business</span></h2>
+    <p class="intro" data-l="ru">Программа видит всё, что вы набираете, поэтому правила простые и проверяемые в исходниках.</p>
+    <p class="intro" data-l="en">The program sees everything you type, so the rules are simple and checkable in the source.</p>
+    <ul class="checks">
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span data-l="ru"><b>Нет сетевого кода.</b> Только локальные сокеты: сессионная шина D-Bus, шина IBus и, на X11, X-сервер.</span>
+        <span data-l="en"><b>No network code.</b> Local sockets only: the session D-Bus, the IBus bus and, on X11, the X server.</span></li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span data-l="ru"><b>Текст не сохраняется.</b> На диск попадают только слова-исключения — ваши и выученные при отмене.</span>
+        <span data-l="en"><b>Text is not stored.</b> Only exception words reach the disk — yours and those learned on undo.</span></li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span data-l="ru"><b>Песочница gswitch сохранена.</b> systemd-юнит не изменён (<code>ProtectHome=read-only</code>): демон ничего не пишет в домашний каталог.</span>
+        <span data-l="en"><b>gswitch's sandbox is kept.</b> The systemd unit is unchanged (<code>ProtectHome=read-only</code>): the daemon writes nothing to your home.</span></li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span data-l="ru"><b>Расширение знает минимум.</b> Только id программы, WM_CLASS и тип поля — без заголовков окон, текста и PID. На экране блокировки GNOME его отключает.</span>
+        <span data-l="en"><b>The extension knows the minimum.</b> Only the app id, WM_CLASS and field type — no window titles, text or PIDs. GNOME disables it on the lock screen.</span></li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span data-l="ru"><b>Слова на шине — по желанию.</b> Исправленные слова видны в D-Bus, только пока <code>ipc-expose-words=true</code>; в журнал они не пишутся.</span>
+        <span data-l="en"><b>Words on the bus are optional.</b> Corrected words appear on D-Bus only while <code>ipc-expose-words=true</code>; they are never logged.</span></li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span data-l="ru"><b>И эта страница</b> ничего не загружает со сторонних серверов: ни шрифтов, ни счётчиков.</span>
+        <span data-l="en"><b>This page too</b> loads nothing from third-party servers: no fonts, no trackers.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="docs">
+  <div class="wrap">
+    <p class="kicker"><span data-l="ru">Документация</span><span data-l="en">Documentation</span></p>
+    <h2><span data-l="ru">Подробности и диагностика</span><span data-l="en">Details and diagnostics</span></h2>
+    <p class="intro" data-l="ru">Эти команды показывают, что видит демон. Им не нужны root и устройства ввода, и они ничего не меняют.</p>
+    <p class="intro" data-l="en">These commands show what the daemon sees. They need neither root nor input devices, and they change nothing.</p>
+    <div class="code" style="margin:0 0 40px"><pre><code>gswitch --auto-check ghbdtn --shown us        <span class="c"># detector verdict as JSON: fix -&gt; привет</span>
+gswitch --layout-state --watch 0              <span class="c"># session, GNOME Shell, layout source and its state</span>
+gswitch --focus-state --watch 0               <span class="c"># extension, X11 window, focus policy decision</span>
+busctl --user introspect io.github.vabuter.GswitchAuto /io/github/vabuter/GswitchAuto</code></pre></div>
+    <div class="docs">
+      <a class="doc" href="https://github.com/vabuter/gswitch-auto#readme"><b>README<i>EN</i></b><span data-l="ru">Всё о форке: настройки, D-Bus, расширение, заметки по X11</span><span data-l="en">The fork in full: settings, D-Bus, extension, X11 notes</span></a>
+      <a class="doc" href="https://github.com/vabuter/gswitch-auto/blob/main/docs/INSTALL-DEBIAN.md"><b>INSTALL-DEBIAN<i>RU</i></b><span data-l="ru">Установка на Debian 12: с агентом и вручную</span><span data-l="en">Installing on Debian 12, with an agent or by hand</span></a>
+      <a class="doc" href="https://github.com/vabuter/gswitch-auto/blob/main/docs/AGENT-INSTALL-DEBIAN.md"><b>AGENT-INSTALL-DEBIAN<i>EN</i></b><span data-l="ru">Пошаговая инструкция для ИИ-агента</span><span data-l="en">The step-by-step runbook for an AI agent</span></a>
+      <a class="doc" href="https://github.com/vabuter/gswitch-auto/blob/main/docs/FORK.md"><b>FORK<i>RU</i></b><span data-l="ru">Версии, релизы, перенос на новые версии gswitch, откат</span><span data-l="en">Versioning, releases, rebasing onto gswitch, rollback</span></a>
+      <a class="doc" href="https://github.com/vabuter/gswitch-auto/blob/main/docs/SPEC.md"><b>SPEC<i>EN</i></b><span data-l="ru">Спецификация реализации: решения и архитектура</span><span data-l="en">The implementation spec: decisions and architecture</span></a>
+      <a class="doc" href="https://github.com/vabuter/gswitch-auto/blob/main/docs/SPEC-X11.md"><b>SPEC-X11<i>EN</i></b><span data-l="ru">Дополнение для Debian 12 / GNOME 43 / X11</span><span data-l="en">The addendum for Debian 12 / GNOME 43 / X11</span></a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <a class="brand" href="#top"><img src="assets/gswitch.svg" alt="" width="26" height="26"><span>gswitch<b>-auto</b></span></a>
+      <p data-l="ru" style="margin:0">Форк <a href="https://github.com/arumata/gswitch">gswitch</a> с автоматическим режимом. Лицензия MIT. О проблемах форка пишите в <a href="https://github.com/vabuter/gswitch-auto/issues">issues этого репозитория</a>, а не в gswitch.</p>
+      <p data-l="en" style="margin:0">A fork of <a href="https://github.com/arumata/gswitch">gswitch</a> with an automatic mode. MIT licence. Report problems with the fork in <a href="https://github.com/vabuter/gswitch-auto/issues">this repository's issues</a>, not upstream.</p>
+    </div>
+    <div>
+      <ul>
+        <li data-l="ru"><a href="https://github.com/arumata/gswitch">gswitch</a> — arumata и соавторы (MIT): всё, на чём стоит форк</li>
+        <li data-l="en"><a href="https://github.com/arumata/gswitch">gswitch</a> by arumata and contributors (MIT): everything the fork builds on</li>
+        <li data-l="ru"><a href="https://github.com/rashevskyv/punto-rs">punto-rs</a> (MIT): устройство детектора и модели</li>
+        <li data-l="en"><a href="https://github.com/rashevskyv/punto-rs">punto-rs</a> (MIT): the detector design and models</li>
+        <li data-l="ru">русская модель — из словаря hunspell-ru (BSD-3-Clause-Modification), английская — из public-domain списка <code>words</code></li>
+        <li data-l="en">the Russian model derives from hunspell-ru (BSD-3-Clause-Modification), the English one from the public-domain <code>words</code> list</li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var META = {
+    ru: { title: "gswitch-auto — автоисправление раскладки для Linux",
+          desc: "gswitch-auto — форк gswitch с автоматическим исправлением слов, набранных не в той раскладке (как Punto Switcher). Linux, GNOME, us + ru: Fedora 44 на Wayland и Debian 12 на Xorg." },
+    en: { title: "gswitch-auto — automatic keyboard layout correction for Linux",
+          desc: "gswitch-auto is a gswitch fork that automatically fixes words typed in the wrong keyboard layout, like Punto Switcher. Linux, GNOME, us + ru: Fedora 44 on Wayland and Debian 12 on Xorg." }
+  };
+
+  function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  function setLang(l) {
+    root.lang = l;
+    document.title = META[l].title;
+    var d = document.querySelector('meta[name="description"]');
+    if (d) d.setAttribute("content", META[l].desc);
+    document.querySelectorAll("[data-set-lang]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-set-lang") === l));
+    });
+  }
+  document.querySelectorAll("[data-set-lang]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var l = b.getAttribute("data-set-lang");
+      store("gsa-lang", l); setLang(l);
+    });
+  });
+  setLang(root.lang === "en" ? "en" : "ru");
+
+  // Theme: follow the system until the user picks one.
+  document.getElementById("theme").addEventListener("click", function () {
+    var cur = root.getAttribute("data-theme") ||
+      (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    var next = cur === "light" ? "dark" : "light";
+    root.setAttribute("data-theme", next); store("gsa-theme", next);
+  });
+
+  // Install tabs.
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  function select(t) {
+    tabs.forEach(function (x) {
+      var on = x === t;
+      x.setAttribute("aria-selected", String(on));
+      x.tabIndex = on ? 0 : -1;
+      document.getElementById(x.getAttribute("aria-controls")).hidden = !on;
+    });
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener("click", function () { select(t); });
+    t.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        var n = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+        select(n); n.focus(); e.preventDefault();
+      }
+    });
+  });
+  select(tabs[0]);
+
+  // Copy buttons on code blocks (comments are copied too: they are shell comments).
+  var copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var okIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  document.querySelectorAll(".code").forEach(function (box) {
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.className = "copy"; btn.innerHTML = copyIcon;
+    btn.setAttribute("aria-label", "Copy");
+    btn.addEventListener("click", function () {
+      var text = box.querySelector("code").innerText.replace(/\s+$/, "") + "\n";
+      var done = function () {
+        btn.classList.add("done"); btn.innerHTML = okIcon;
+        setTimeout(function () { btn.classList.remove("done"); btn.innerHTML = copyIcon; }, 1400);
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        var ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+    box.appendChild(btn);
+  });
+
+  // Section highlight in the navigation.
+  if ("IntersectionObserver" in window) {
+    var links = {};
+    document.querySelectorAll("nav.links a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          Object.keys(links).forEach(function (k) { links[k].classList.toggle("active", k === en.target.id); });
+        }
+      });
+    }, { rootMargin: "-45% 0px -50% 0px" });
+    document.querySelectorAll("main section[id]").forEach(function (s) { io.observe(s); });
+  }
+
+  // Demo: what the daemon does after Space, slowed down so it can be seen.
+  var textEl = document.getElementById("demoText"), indEl = document.getElementById("ind"), logEl = document.getElementById("demoLog");
+  var L = {
+    space1: { ru: "пробел → «ghbdtn» в раскладке ru — это «привет»", en: "Space → “ghbdtn” in the ru layout is “привет”" },
+    fix1: { ru: "✓ исправлено за 120 мс, раскладка: ru", en: "✓ fixed after 120 ms, layout: ru" },
+    space2: { ru: "пробел → «руддщ» в раскладке us — это «hello»", en: "Space → “руддщ” in the us layout is “hello”" },
+    fix2: { ru: "✓ исправлено, раскладка: us", en: "✓ fixed, layout: us" },
+    keep: { ru: "пробел → «git» — настоящее слово, исправлять нечего", en: "Space → “git” is a real word, nothing to fix" },
+    enter: { ru: "Enter → исправление не запускается", en: "Enter → never triggers a fix" }
+  };
+  var state = { plain: "", fixed: "", erase: 0, ind: "en", log: [] };
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function render() {
+    var p = state.plain, e = state.erase;
+    var html = e ? esc(p.slice(0, p.length - e)) + '<span class="erase">' + esc(p.slice(p.length - e)) + "</span>" : esc(p);
+    if (state.fixed) html = esc(state.before || "") + '<span class="fixed">' + esc(state.fixed) + "</span>" + esc(state.after || "");
+    textEl.innerHTML = html;
+    indEl.textContent = state.ind;
+    indEl.className = "ind" + (state.ind === "ru" ? " ru" : "");
+    var l = root.lang === "en" ? "en" : "ru";
+    logEl.innerHTML = state.log.slice(-3).map(function (m) {
+      return '<div class="' + (m.cls || "") + '">' + esc(L[m.k][l]) + "</div>";
+    }).join("");
+  }
+  document.querySelectorAll("[data-set-lang]").forEach(function (b) { b.addEventListener("click", render); });
+
+  if (reduce) {
+    state = { plain: "", fixed: "привет ", before: "", after: "как дела", ind: "ru", log: [{ k: "space1" }, { k: "fix1", cls: "ok" }] };
+    render();
+    return;
+  }
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  async function waitVisible() { while (document.hidden) await sleep(400); }
+  async function type(s, d) {
+    for (var i = 0; i < s.length; i++) {
+      await waitVisible();
+      if (state.fixed) state.after += s[i]; else state.plain += s[i];
+      render(); await sleep(d + Math.random() * d * 0.6);
+    }
+  }
+  async function fix(word, to, ind, logKey) {
+    state.erase = word.length + 1; render(); await sleep(320);
+    for (var i = 0; i <= word.length; i++) {
+      state.plain = state.plain.slice(0, -1); state.erase = Math.max(0, state.erase - 1); render(); await sleep(28);
+    }
+    var base = state.plain; state.erase = 0;
+    state.ind = ind; indEl.classList.add("flip"); render();
+    setTimeout(function () { indEl.classList.remove("flip"); }, 260);
+    await sleep(120);
+    state.before = base; state.fixed = ""; state.after = "";
+    for (var j = 0; j < to.length; j++) { state.fixed += to[j]; render(); await sleep(16); }
+    state.log.push({ k: logKey, cls: "ok" }); render();
+  }
+  function reset(ind) { state = { plain: "", fixed: "", before: "", after: "", erase: 0, ind: ind, log: [] }; render(); }
+
+  (async function loop() {
+    for (;;) {
+      reset("en"); await sleep(700);
+      await type("ghbdtn ", 120);
+      state.log.push({ k: "space1" }); render(); await sleep(160);
+      await fix("ghbdtn", "привет ", "ru", "fix1");
+      await sleep(350); await type("как дела?", 120); await sleep(2200);
+
+      reset("ru"); await sleep(600);
+      await type("руддщ ", 120);
+      state.log.push({ k: "space2" }); render(); await sleep(160);
+      await fix("руддщ", "hello ", "en", "fix2");
+      await sleep(350); await type("world", 120); await sleep(2200);
+
+      reset("en"); await sleep(600);
+      await type("git ", 120);
+      state.log.push({ k: "keep", cls: "skip" }); render(); await sleep(500);
+      await type("status", 110); await sleep(300);
+      state.log.push({ k: "enter", cls: "skip" }); render(); await sleep(2400);
+    }
+  })();
+})();
+</script>
+</body>
+</html>
